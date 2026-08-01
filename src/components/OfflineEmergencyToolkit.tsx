@@ -1,0 +1,313 @@
+import React, { useState } from 'react';
+import { FakeCallConfig } from '../types';
+import { GuardIaLogo } from './GuardIaLogo';
+import { Phone, Volume2, Flashlight, WifiOff, MapPin, Send, AlertTriangle, ShieldCheck, Clock, PhoneIncoming, PhoneOff, Zap, Shield, HelpCircle } from 'lucide-react';
+import { EMERGENCY_HOTLINES } from '../data/mockData';
+
+interface OfflineEmergencyToolkitProps {
+  isOffline: boolean;
+  setIsOffline: (val: boolean) => void;
+  onTriggerSos: () => void;
+}
+
+export const OfflineEmergencyToolkit: React.FC<OfflineEmergencyToolkitProps> = ({
+  isOffline,
+  setIsOffline,
+  onTriggerSos,
+}) => {
+  // Fake Call State
+  const [fakeCallActive, setFakeCallActive] = useState(false);
+  const [fakeCallTimerSec, setFakeCallTimerSec] = useState<number | null>(null);
+  const [fakeCallConfig, setFakeCallConfig] = useState<FakeCallConfig>({
+    callerName: 'Mom (Urgent Call)',
+    callerNumber: '+1 (555) 019-2834',
+    delaySeconds: 5,
+    voiceScript: 'Hey, where are you? I need you home right now, please hurry!',
+  });
+
+  // Siren Synth State
+  const [isSirenActive, setIsSirenActive] = useState(false);
+  const [audioCtx, setAudioCtx] = useState<AudioContext | null>(null);
+  const [oscillator, setOscillator] = useState<OscillatorNode | null>(null);
+
+  // Strobe Flasher State
+  const [isStrobeActive, setIsStrobeActive] = useState(false);
+
+  // Trigger Fake Call Delay
+  const handleScheduleFakeCall = () => {
+    setFakeCallTimerSec(fakeCallConfig.delaySeconds);
+    const interval = setInterval(() => {
+      setFakeCallTimerSec((prev) => {
+        if (prev === 1) {
+          clearInterval(interval);
+          setFakeCallActive(true);
+          return null;
+        }
+        return prev ? prev - 1 : null;
+      });
+    }, 1000);
+  };
+
+  // Loud Emergency Siren Synthesizer
+  const toggleSiren = () => {
+    if (isSirenActive) {
+      if (oscillator) oscillator.stop();
+      if (audioCtx) audioCtx.close();
+      setIsSirenActive(false);
+      setOscillator(null);
+      setAudioCtx(null);
+    } else {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(800, ctx.currentTime);
+
+      // Frequency modulation for loud siren oscillation
+      let up = true;
+      setInterval(() => {
+        if (osc.frequency) {
+          osc.frequency.setValueAtTime(up ? 1200 : 600, ctx.currentTime + 0.3);
+          up = !up;
+        }
+      }, 400);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+
+      setAudioCtx(ctx);
+      setOscillator(osc);
+      setIsSirenActive(true);
+    }
+  };
+
+  // Flashlight SOS Screen Strobe
+  const toggleStrobe = () => {
+    setIsStrobeActive(!isStrobeActive);
+  };
+
+  return (
+    <div className="space-y-5">
+      {/* Top Offline Mode Switch & Toolkit Header */}
+      <div className="bg-white border border-[#E9D8DE] rounded-2xl p-4 sm:p-5 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center space-x-3">
+            <GuardIaLogo size="sm" />
+            <div>
+              <div className="flex items-center space-x-2">
+                <WifiOff className="w-4 h-4 text-[#A70F43]" />
+                <h2 className="text-base font-bold text-[#2F2B2D]">All-In-One Offline & Safety Toolkit</h2>
+              </div>
+              <p className="text-xs text-[#7B7280] mt-0.5">
+                Works without internet: SMS alerts, fake incoming call generator, siren, and cached maps.
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={() => setIsOffline(!isOffline)}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-all flex items-center space-x-2 shrink-0 ${
+              isOffline
+                ? 'bg-[#A70F43] text-white border-[#8D0D39] shadow-sm'
+                : 'bg-[#FFF8F9] text-[#7B7280] border-[#E9D8DE]'
+            }`}
+          >
+            <WifiOff className="w-4 h-4" />
+            <span>Offline Maps: {isOffline ? 'LOADED' : 'STANDBY'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Screen Strobe Flashlight Overlay */}
+      {isStrobeActive && (
+        <div
+          onClick={toggleStrobe}
+          className="fixed inset-0 z-50 bg-white animate-ping flex items-center justify-center cursor-pointer"
+        >
+          <span className="bg-[#2F2B2D] text-white font-extrabold px-6 py-3 rounded-2xl text-base border border-[#A70F43]">
+            SOS STROBE FLASHLIGHT ACTIVE (Tap to stop)
+          </span>
+        </div>
+      )}
+
+      {/* Fake Call Incoming Phone Call Modal Simulation */}
+      {fakeCallActive && (
+        <div className="fixed inset-0 z-50 bg-[#2F2B2D] text-white flex flex-col justify-between p-6 animate-fade-in">
+          <div className="text-center mt-10 space-y-2">
+            <span className="text-xs font-mono uppercase tracking-widest text-[#E9D8DE]">Incoming Phone Call</span>
+            <h1 className="text-2xl font-black">{fakeCallConfig.callerName}</h1>
+            <p className="text-xs font-mono text-[#E9D8DE]">{fakeCallConfig.callerNumber}</p>
+          </div>
+
+          {/* Caller Photo Avatar Circle */}
+          <div className="w-28 h-28 mx-auto rounded-full bg-[#A70F43] border-4 border-white flex items-center justify-center text-3xl font-extrabold animate-pulse shadow-2xl text-white">
+            {fakeCallConfig.callerName[0]}
+          </div>
+
+          <div className="bg-white/10 p-3.5 rounded-2xl border border-white/20 text-center max-w-md mx-auto space-y-1">
+            <span className="text-[10px] text-[#F2C94C] font-mono font-bold uppercase">Simulated Voice Script</span>
+            <p className="text-xs text-white italic">"{fakeCallConfig.voiceScript}"</p>
+          </div>
+
+          {/* Accept / Decline Buttons */}
+          <div className="flex justify-around items-center mb-10 max-w-xs mx-auto w-full">
+            <button
+              onClick={() => setFakeCallActive(false)}
+              className="w-14 h-14 rounded-full bg-rose-600 flex items-center justify-center text-white shadow-lg animate-bounce"
+            >
+              <PhoneOff className="w-7 h-7" />
+            </button>
+
+            <button
+              onClick={() => {
+                alert(`Voice script playing: "${fakeCallConfig.voiceScript}"`);
+                setFakeCallActive(false);
+              }}
+              className="w-14 h-14 rounded-full bg-[#5FA777] flex items-center justify-center text-white shadow-lg animate-pulse"
+            >
+              <PhoneIncoming className="w-7 h-7" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Tools Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        {/* Fake Call & Loud Siren / Strobe */}
+        <div className="lg:col-span-6 bg-white border border-[#E9D8DE] rounded-2xl p-4 sm:p-5 shadow-sm space-y-4">
+          <div className="border-b border-[#E9D8DE] pb-2">
+            <h3 className="text-xs font-bold text-[#2F2B2D] flex items-center gap-2">
+              <PhoneIncoming className="w-4 h-4 text-[#A70F43]" />
+              Fake Incoming Call Generator
+            </h3>
+            <p className="text-[10px] text-[#7B7280] mt-0.5">
+              Triggers realistic incoming phone call screen & voice script to safely exit uncomfortable situations.
+            </p>
+          </div>
+
+          <div className="space-y-2.5 text-xs">
+            <div>
+              <label className="block text-[#7B7280] mb-1 font-semibold">Caller Identity</label>
+              <input
+                type="text"
+                value={fakeCallConfig.callerName}
+                onChange={(e) => setFakeCallConfig({ ...fakeCallConfig, callerName: e.target.value })}
+                className="w-full bg-[#FFF8F9] border border-[#E9D8DE] rounded-xl px-3 py-1.5 text-[#2F2B2D] focus:outline-none focus:border-[#A70F43]"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-[#7B7280] mb-1 font-semibold">Timer Delay</label>
+                <select
+                  value={fakeCallConfig.delaySeconds}
+                  onChange={(e: any) => setFakeCallConfig({ ...fakeCallConfig, delaySeconds: parseInt(e.target.value) })}
+                  className="w-full bg-[#FFF8F9] border border-[#E9D8DE] rounded-xl px-3 py-1.5 text-[#2F2B2D] focus:outline-none focus:border-[#A70F43]"
+                >
+                  <option value="3">Instant (3s)</option>
+                  <option value="10">10 Seconds</option>
+                  <option value="30">30 Seconds</option>
+                  <option value="60">1 Minute</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[#7B7280] mb-1 font-semibold">Voice Script</label>
+                <input
+                  type="text"
+                  value={fakeCallConfig.voiceScript}
+                  onChange={(e) => setFakeCallConfig({ ...fakeCallConfig, voiceScript: e.target.value })}
+                  className="w-full bg-[#FFF8F9] border border-[#E9D8DE] rounded-xl px-3 py-1.5 text-[#2F2B2D] focus:outline-none focus:border-[#A70F43]"
+                />
+              </div>
+            </div>
+
+            <button
+              onClick={handleScheduleFakeCall}
+              disabled={fakeCallTimerSec !== null}
+              className="w-full py-2.5 rounded-xl bg-[#A70F43] hover:bg-[#8D0D39] text-white font-bold text-xs shadow-sm transition-all disabled:opacity-50 border border-[#8D0D39]"
+            >
+              {fakeCallTimerSec !== null
+                ? `Triggering Fake Call in 00:0${fakeCallTimerSec}...`
+                : 'Schedule Fake Incoming Call'}
+            </button>
+          </div>
+
+          {/* Siren & Flashlight Emergency Buttons */}
+          <div className="grid grid-cols-2 gap-2.5 pt-2 border-t border-[#E9D8DE]">
+            <button
+              onClick={toggleSiren}
+              className={`py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all ${
+                isSirenActive
+                  ? 'bg-[#A70F43] text-white animate-pulse border border-[#8D0D39]'
+                  : 'bg-[#FFF8F9] hover:bg-[#FFF0F3] text-[#2F2B2D] border border-[#E9D8DE]'
+              }`}
+            >
+              <Volume2 className="w-4 h-4 text-[#A70F43]" />
+              <span>{isSirenActive ? 'STOP SIREN' : 'LOUD SIREN'}</span>
+            </button>
+
+            <button
+              onClick={toggleStrobe}
+              className="py-2.5 rounded-xl bg-[#FFF8F9] hover:bg-[#FFF0F3] text-[#2F2B2D] border border-[#E9D8DE] font-bold text-xs flex items-center justify-center gap-1.5 transition-all"
+            >
+              <Flashlight className="w-4 h-4 text-[#A70F43]" />
+              <span>STROBE FLASHLIGHT</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Local Emergency Hotlines & Nearby Safe Places */}
+        <div className="lg:col-span-6 bg-white border border-[#E9D8DE] rounded-2xl p-4 sm:p-5 shadow-sm space-y-4">
+          <div className="border-b border-[#E9D8DE] pb-2">
+            <h3 className="text-xs font-bold text-[#2F2B2D] flex items-center gap-2">
+              <Phone className="w-4 h-4 text-[#A70F43]" />
+              1-Tap Emergency Hotlines Directory
+            </h3>
+            <p className="text-[10px] text-[#7B7280] mt-0.5">Direct dial lines for police, women helpline, and medical dispatch</p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+            {EMERGENCY_HOTLINES.map((h, i) => (
+              <a
+                key={i}
+                href={`tel:${h.number}`}
+                className="p-2.5 rounded-xl bg-[#FFF8F9] hover:bg-[#FFF0F3] border border-[#E9D8DE] hover:border-[#A70F43] transition-colors block text-left"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-[#2F2B2D]">{h.name}</span>
+                  <span className="font-mono font-bold text-white bg-[#A70F43] px-2 py-0.5 rounded text-[10px]">
+                    {h.number}
+                  </span>
+                </div>
+                <p className="text-[10px] text-[#7B7280] mt-0.5 line-clamp-1">{h.desc}</p>
+              </a>
+            ))}
+          </div>
+
+          {/* SMS Alert Fallback Generator */}
+          <div className="p-3 rounded-xl bg-[#FFF8F9] border border-[#E9D8DE] space-y-2 text-xs">
+            <span className="font-bold text-[#2F2B2D] flex items-center gap-1.5">
+              <Send className="w-3.5 h-3.5 text-[#A70F43]" />
+              Offline SMS Emergency Alert Payload
+            </span>
+            <p className="text-[#2F2B2D] font-mono text-[10px] bg-white p-2 rounded-lg border border-[#E9D8DE]">
+              EMERGENCY SOS! I need help at Lat: 28.6139, Lng: 77.2090. Track live: https://safera.app/track/sos-9821
+            </p>
+            <a
+              href={`sms:?body=${encodeURIComponent(
+                'EMERGENCY SOS! I need help at Lat: 28.6139, Lng: 77.2090. Track live: https://safera.app/track/sos-9821'
+              )}`}
+              className="inline-block py-1.5 px-3 rounded-xl bg-[#A70F43] text-white font-bold text-xs border border-[#8D0D39]"
+            >
+              Open Device Messages App (SMS)
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
