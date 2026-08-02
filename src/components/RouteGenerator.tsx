@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+
 import { RouteOption, SafetyLocation } from "../types";
 import { GuardIaLogo } from "./GuardIaLogo";
 import { LiveRouteMap } from "./LiveRouteMap";
@@ -37,11 +38,9 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
   selectedLocationTarget,
   onStartNavigation,
 }) => {
-  const [origin, setOrigin] = useState("Central Metro Station");
+  const [origin, setOrigin] = useState("");
   const [destination, setDestination] = useState(
-    selectedLocationTarget
-      ? selectedLocationTarget.name
-      : "St. Mary’s Care Hospital & Senior Hub",
+    selectedLocationTarget ? selectedLocationTarget.name : "",
   );
   const [timeOfDay, setTimeOfDay] = useState<"Day" | "Evening" | "Late Night">(
     "Late Night",
@@ -196,6 +195,38 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       { enableHighAccuracy: true, timeout: 10000 },
     );
   };
+  useEffect(() => {
+  if (!navigator.geolocation) {
+    setOrigin("Connaught Place, New Delhi, India");
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const { latitude, longitude } = pos.coords;
+      setOrigin(`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
+      setOriginCoords({ lat: latitude, lng: longitude, displayName: "Current Location" });
+
+      fetch(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data?.display_name) {
+            setOrigin(data.display_name);
+            setOriginCoords({ lat: latitude, lng: longitude, displayName: data.display_name });
+          }
+        })
+        .catch(() => {
+          // Reverse geocode failed — raw coordinates from above are still fine.
+        });
+    },
+    (err) => {
+      console.warn("Geolocation unavailable, using fallback:", err.message);
+      setOrigin("Connaught Place, New Delhi, India");
+    },
+    { enableHighAccuracy: true, timeout: 8000 }
+  );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
   const selectedRoute = routes.find((r) => r.id === activeRouteId) || routes[0];
 
   return (
@@ -239,7 +270,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
                 value={origin}
                 onChange={setOrigin}
                 onSelect={(place) => setOriginCoords(place)}
-                placeholder="Start Location"
+                placeholder="Detecting your location..."
               />
             </div>
             <button
@@ -260,7 +291,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
                 value={destination}
                 onChange={setDestination}
                 onSelect={(place) => setDestinationCoords(place)}
-                placeholder="End Location"
+                placeholder="Where are you headed?"
               />
             </div>
           </div>
@@ -346,143 +377,146 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       )}
       {/* Generated Route Options Cards Grid */}
       {routes.length === 0 ? (
-  <div className="bg-white border border-dashed border-[#EFE6E1] rounded-[24px] p-10 text-center space-y-2">
-    <Navigation className="w-6 h-6 text-[#A70F43] mx-auto" />
-    <p className="text-sm font-semibold text-[#221F20]">No route generated yet</p>
-    <p className="text-xs text-[#6E676A]">
-      Enter a start and destination above, then click "Re-calculate Safest Routes" to see live options.
-    </p>
-  </div>
-) : (
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        {routes.map((route) => {
-          const isSelected = route.id === activeRouteId;
-          const isHighSafety = route.safetyScore >= 90;
+        <div className="bg-white border border-dashed border-[#EFE6E1] rounded-[24px] p-10 text-center space-y-2">
+          <Navigation className="w-6 h-6 text-[#A70F43] mx-auto" />
+          <p className="text-sm font-semibold text-[#221F20]">
+            No route generated yet
+          </p>
+          <p className="text-xs text-[#6E676A]">
+            Enter a start and destination above, then click "Re-calculate Safest
+            Routes" to see live options.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          {routes.map((route) => {
+            const isSelected = route.id === activeRouteId;
+            const isHighSafety = route.safetyScore >= 90;
 
-          return (
-            <div
-              key={route.id}
-              onClick={() => setActiveRouteId(route.id)}
-              className={`cursor-pointer rounded-[24px] p-5 border transition-all relative flex flex-col justify-between space-y-4 ${
-                isSelected
-                  ? "bg-white border-[#A70F43] ring-2 ring-[#FFF0F3] shadow-[0_4px_20px_rgba(167,15,67,0.06)]"
-                  : "bg-white border-[#EFE6E1] hover:border-[#A70F43]"
-              }`}
-            >
-              <div>
-                <div className="flex items-center justify-between gap-2 mb-3">
-                  <span className="text-[11px] font-medium px-3 py-0.5 rounded-full bg-[#FFF0F3] text-[#A70F43] border border-[#EFE6E1]">
-                    {route.tag}
-                  </span>
-                  <div
-                    className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${
-                      isHighSafety
-                        ? "bg-[#FFF0F3] text-[#A70F43] border border-[#EFE6E1]"
-                        : "bg-amber-50 text-amber-800 border border-amber-200"
-                    }`}
-                  >
-                    Safety {route.safetyScore}/100
-                  </div>
-                </div>
-
-                <h3 className="text-[18px] font-semibold text-[#221F20] mb-1.5">
-                  {route.name}
-                </h3>
-
-                <div className="flex items-center space-x-3 text-xs text-[#6E676A] mb-4">
-                  <span className="flex items-center space-x-1">
-                    <Footprints className="w-3.5 h-3.5 text-[#A70F43]" />
-                    <span>{route.distance}</span>
-                  </span>
-                  <span className="flex items-center space-x-1">
-                    <Clock className="w-3.5 h-3.5 text-[#A70F43]" />
-                    <span>{route.estimatedTime}</span>
-                  </span>
-                </div>
-
-                {/* Progress Indicators */}
-                <div className="space-y-2.5 text-xs">
-                  <div>
-                    <div className="flex justify-between text-[11px] text-[#6E676A] mb-1">
-                      <span>Lighting Coverage</span>
-                      <span className="text-[#A70F43] font-bold">
-                        {route.lightingPercent}%
-                      </span>
-                    </div>
-                    <div className="w-full bg-[#FEFCFA] border border-[#EFE6E1] h-2 rounded-full overflow-hidden">
-                      <div
-                        className="bg-[#A70F43] h-full rounded-full transition-all"
-                        style={{ width: `${route.lightingPercent}%` }}
-                      ></div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between text-[11px] text-[#6E676A] mb-1">
-                      <span>Step-Free Accessibility</span>
-                      <span className="text-[#221F20] font-bold">
-                        {route.accessibilityScore}%
-                      </span>
-                    </div>
-                    <div className="w-full bg-[#FEFCFA] border border-[#EFE6E1] h-2 rounded-full overflow-hidden">
-                      <div
-                        className="bg-[#5FA777] h-full rounded-full transition-all"
-                        style={{ width: `${route.accessibilityScore}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Highlights List */}
-                <div className="mt-4 space-y-1.5 text-xs text-[#221F20]">
-                  <span className="text-[11px] font-semibold text-[#6E676A]">
-                    Safety Features:
-                  </span>
-                  {route.highlights.map((h, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-start gap-1.5 text-[#221F20]"
-                    >
-                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[#5FA777]" />
-                      <span>{h}</span>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Risk Segments Warnings */}
-                {route.riskSegments && route.riskSegments.length > 0 && (
-                  <div className="mt-4 p-3 rounded-[16px] bg-amber-50/80 border border-amber-200 space-y-1 text-xs">
-                    <span className="font-semibold text-amber-800 flex items-center gap-1 text-[11px]">
-                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-                      Segment Warning:
-                    </span>
-                    {route.riskSegments.map((r, idx) => (
-                      <p key={idx} className="text-amber-800 text-[11px]">
-                        • {r}
-                      </p>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onStartNavigation(route);
-                }}
-                className={`w-full py-2.5 rounded-full font-semibold text-xs transition-all flex items-center justify-center gap-2 ${
+            return (
+              <div
+                key={route.id}
+                onClick={() => setActiveRouteId(route.id)}
+                className={`cursor-pointer rounded-[24px] p-5 border transition-all relative flex flex-col justify-between space-y-4 ${
                   isSelected
-                    ? "bg-[#A70F43] hover:bg-[#8D0D39] text-white shadow-xs"
-                    : "bg-[#FEFCFA] hover:bg-[#FFF0F3] text-[#221F20] border border-[#EFE6E1]"
+                    ? "bg-white border-[#A70F43] ring-2 ring-[#FFF0F3] shadow-[0_4px_20px_rgba(167,15,67,0.06)]"
+                    : "bg-white border-[#EFE6E1] hover:border-[#A70F43]"
                 }`}
               >
-                <Navigation className="w-4 h-4" />
-                <span>Start Live Guided Walk</span>
-              </button>
-            </div>
-          );
-        })}
-      </div>
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-3">
+                    <span className="text-[11px] font-medium px-3 py-0.5 rounded-full bg-[#FFF0F3] text-[#A70F43] border border-[#EFE6E1]">
+                      {route.tag}
+                    </span>
+                    <div
+                      className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                        isHighSafety
+                          ? "bg-[#FFF0F3] text-[#A70F43] border border-[#EFE6E1]"
+                          : "bg-amber-50 text-amber-800 border border-amber-200"
+                      }`}
+                    >
+                      Safety {route.safetyScore}/100
+                    </div>
+                  </div>
+
+                  <h3 className="text-[18px] font-semibold text-[#221F20] mb-1.5">
+                    {route.name}
+                  </h3>
+
+                  <div className="flex items-center space-x-3 text-xs text-[#6E676A] mb-4">
+                    <span className="flex items-center space-x-1">
+                      <Footprints className="w-3.5 h-3.5 text-[#A70F43]" />
+                      <span>{route.distance}</span>
+                    </span>
+                    <span className="flex items-center space-x-1">
+                      <Clock className="w-3.5 h-3.5 text-[#A70F43]" />
+                      <span>{route.estimatedTime}</span>
+                    </span>
+                  </div>
+
+                  {/* Progress Indicators */}
+                  <div className="space-y-2.5 text-xs">
+                    <div>
+                      <div className="flex justify-between text-[11px] text-[#6E676A] mb-1">
+                        <span>Lighting Coverage</span>
+                        <span className="text-[#A70F43] font-bold">
+                          {route.lightingPercent}%
+                        </span>
+                      </div>
+                      <div className="w-full bg-[#FEFCFA] border border-[#EFE6E1] h-2 rounded-full overflow-hidden">
+                        <div
+                          className="bg-[#A70F43] h-full rounded-full transition-all"
+                          style={{ width: `${route.lightingPercent}%` }}
+                        ></div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between text-[11px] text-[#6E676A] mb-1">
+                        <span>Step-Free Accessibility</span>
+                        <span className="text-[#221F20] font-bold">
+                          {route.accessibilityScore}%
+                        </span>
+                      </div>
+                      <div className="w-full bg-[#FEFCFA] border border-[#EFE6E1] h-2 rounded-full overflow-hidden">
+                        <div
+                          className="bg-[#5FA777] h-full rounded-full transition-all"
+                          style={{ width: `${route.accessibilityScore}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Highlights List */}
+                  <div className="mt-4 space-y-1.5 text-xs text-[#221F20]">
+                    <span className="text-[11px] font-semibold text-[#6E676A]">
+                      Safety Features:
+                    </span>
+                    {route.highlights.map((h, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-start gap-1.5 text-[#221F20]"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[#5FA777]" />
+                        <span>{h}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Risk Segments Warnings */}
+                  {route.riskSegments && route.riskSegments.length > 0 && (
+                    <div className="mt-4 p-3 rounded-[16px] bg-amber-50/80 border border-amber-200 space-y-1 text-xs">
+                      <span className="font-semibold text-amber-800 flex items-center gap-1 text-[11px]">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                        Segment Warning:
+                      </span>
+                      {route.riskSegments.map((r, idx) => (
+                        <p key={idx} className="text-amber-800 text-[11px]">
+                          • {r}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onStartNavigation(route);
+                  }}
+                  className={`w-full py-2.5 rounded-full font-semibold text-xs transition-all flex items-center justify-center gap-2 ${
+                    isSelected
+                      ? "bg-[#A70F43] hover:bg-[#8D0D39] text-white shadow-xs"
+                      : "bg-[#FEFCFA] hover:bg-[#FFF0F3] text-[#221F20] border border-[#EFE6E1]"
+                  }`}
+                >
+                  <Navigation className="w-4 h-4" />
+                  <span>Start Live Guided Walk</span>
+                </button>
+              </div>
+            );
+          })}
+        </div>
       )}
 
       {/* Selected Route Turn-By-Turn Preview */}
