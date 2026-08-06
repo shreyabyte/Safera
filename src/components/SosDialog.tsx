@@ -13,7 +13,10 @@ import {
   Smartphone,
   Volume2,
   X,
+  MessageSquareText,
+  MapPin,
 } from 'lucide-react';
+import { getBestEffortLocation, buildSosMessage, buildSmsLinks, SosCoords } from '../utils/sos';
 
 interface SosDialogProps {
   isOpen: boolean;
@@ -21,6 +24,7 @@ interface SosDialogProps {
   contacts: EmergencyContact[];
   onAddContact: (contact: EmergencyContact) => void;
   onDeleteContact: (id: string) => void;
+  isOffline: boolean;
 }
 
 export const SosDialog: React.FC<SosDialogProps> = ({
@@ -29,10 +33,19 @@ export const SosDialog: React.FC<SosDialogProps> = ({
   contacts,
   onAddContact,
   onDeleteContact,
+  isOffline,
 }) => {
   const [dispatchStage, setDispatchStage] = useState<'idle' | 'countdown' | 'dispatched'>('idle');
   const [cancelSeconds, setCancelSeconds] = useState(5);
   const [powerButtonClicks, setPowerButtonClicks] = useState(0);
+
+  // Real dispatch data — populated as soon as dispatch starts, so it's
+  // ready by the time the cancel countdown finishes.
+  const [coords, setCoords] = useState<SosCoords | null>(null);
+  const [locationPending, setLocationPending] = useState(false);
+  const [liveUrl, setLiveUrl] = useState<string | null>(null);
+  const [liveSessionId, setLiveSessionId] = useState<string | null>(null);
+  const [smsLinks, setSmsLinks] = useState<ReturnType<typeof buildSmsLinks>>([]);
 
   // Contact form state
   const [newContactName, setNewContactName] = useState('');
@@ -70,11 +83,56 @@ export const SosDialog: React.FC<SosDialogProps> = ({
   const triggerSosDispatch = () => {
     setCancelSeconds(5);
     setDispatchStage('countdown');
+    setCoords(null);
+    setLiveUrl(null);
+    setLiveSessionId(null);
+    setSmsLinks([]);
+
+    // Runs in parallel with the 5s cancel countdown, so real data is ready
+    // the moment dispatch actually fires — not fetched after the fact.
+    setLocationPending(true);
+    getBestEffortLocation().then(async (bestCoords) => {
+      setCoords(bestCoords);
+      setLocationPending(false);
+
+      let url: string | undefined;
+
+      // Only attempt the backend when we actually have a connection —
+      // offline, we skip straight to the SMS fallback (Nightingale's core
+      // pattern: SMS goes out over cellular signal with zero data needed).
+      if (!isOffline && bestCoords) {
+        try {
+          const res = await fetch('/api/live-location/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              lat: bestCoords.lat,
+              lng: bestCoords.lng,
+              accuracy: bestCoords.accuracy,
+              label: 'SOS Alert',
+            }),
+          });
+          if (res.ok) {
+            const session = await res.json();
+            url = `${window.location.origin}/live/${session.id}`;
+            setLiveUrl(url);
+            setLiveSessionId(session.id);
+          }
+        } catch {
+          // Network hiccup mid-dispatch — fall through to SMS-only, same as the offline path.
+        }
+      }
+
+      setSmsLinks(buildSmsLinks(contacts, buildSosMessage(bestCoords, url)));
+    });
   };
 
   const handleCancelSos = () => {
     setDispatchStage('idle');
     setCancelSeconds(5);
+    if (liveSessionId) {
+      fetch(`/api/live-location/${liveSessionId}/stop`, { method: 'POST' }).catch(() => {});
+    }
   };
 
   if (!isOpen) return null;
@@ -108,7 +166,12 @@ export const SosDialog: React.FC<SosDialogProps> = ({
             <h3 className="text-sm font-bold text-[#A70F43]">DISPATCHING EMERGENCY SOS ALERT IN:</h3>
             <div className="text-5xl font-mono font-black text-[#2F2B2D]">{cancelSeconds}</div>
             <p className="text-xs text-[#7B7280]">
-              Broadcasting Live GPS (28.6139, 77.2090) to {contacts.length} Emergency Contacts & Police Dispatch (112)
+              {locationPending
+                ? 'Getting your location…'
+                : coords
+                ? `Preparing alert at ${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)} for ${contacts.length} emergency contact${contacts.length === 1 ? '' : 's'}`
+                : `Location unavailable — preparing SMS alert for ${contacts.length} emergency contact${contacts.length === 1 ? '' : 's'} without it`}
+              {isOffline && ' (offline — SMS fallback only)'}
             </p>
             <button
               onClick={handleCancelSos}
@@ -120,20 +183,77 @@ export const SosDialog: React.FC<SosDialogProps> = ({
         )}
 
         {dispatchStage === 'dispatched' && (
-          <div className="bg-[#FFF8F9] border-2 border-[#A70F43] rounded-2xl p-5 text-center space-y-3">
-            <div className="w-10 h-10 mx-auto rounded-full bg-[#A70F43] text-white flex items-center justify-center">
-              <CheckCircle2 className="w-6 h-6 text-white" />
+          <div className="bg-[#FFF8F9] border-2 border-[#A70F43] rounded-2xl p-5 text-left space-y-3">
+            <div className="flex items-center gap-2 justify-center">
+              <div className="w-10 h-10 rounded-full bg-[#A70F43] text-white flex items-center justify-center shrink-0">
+                <CheckCircle2 className="w-6 h-6 text-white" />
+              </div>
+              <h3 className="text-base font-extrabold text-[#2F2B2D]">SOS Alert Ready</h3>
             </div>
-            <h3 className="text-base font-extrabold text-[#2F2B2D]">SOS DISPATCH BROADCAST SENT</h3>
-            <div className="bg-white p-3 rounded-xl text-left text-xs font-mono text-[#2F2B2D] space-y-1 border border-[#E9D8DE]">
-              <div>• Live Tracking URL: https://safera.app/track/sos-9821</div>
-              <div>• SMS Sent to: {contacts.map((c) => c.name).join(', ')}</div>
-              <div>• Police Dispatch Alert: Local Police Dispatch 112</div>
-              <div>• Evidence Vault: Timestamped Recording Saved</div>
+
+            {coords ? (
+              <div className="flex items-center gap-1.5 text-xs text-[#7B7280] justify-center">
+                <MapPin className="w-3.5 h-3.5 text-[#A70F43]" />
+                <span>
+                  {coords.lat.toFixed(5)}, {coords.lng.toFixed(5)}
+                  {Date.now() - coords.timestamp > 60_000 ? ' (last known)' : ''}
+                </span>
+              </div>
+            ) : (
+              <p className="text-xs text-[#7B7280] text-center">Location unavailable — alert sent without it.</p>
+            )}
+
+            {liveUrl && (
+              <a
+                href={liveUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="block bg-white p-2.5 rounded-xl text-xs font-mono text-[#A70F43] border border-[#E9D8DE] break-all hover:bg-[#FFF0F3] transition-colors"
+              >
+                {liveUrl}
+              </a>
+            )}
+            {!liveUrl && isOffline && (
+              <p className="text-[11px] text-[#7B7280] text-center">
+                Offline — no live tracking link. Your contacts still get your location via SMS below.
+              </p>
+            )}
+
+            <div className="space-y-1.5 pt-1">
+              <p className="text-[11px] font-bold text-[#7B7280] uppercase tracking-wide">
+                Tap to send SMS ({smsLinks.length} of {contacts.length} contacts have SMS enabled)
+              </p>
+              {smsLinks.length === 0 && (
+                <p className="text-xs text-[#7B7280]">
+                  No contacts have SMS alerts enabled. Add one below or enable "Send SMS" for an existing contact.
+                </p>
+              )}
+              {smsLinks.map(({ contact, href }) => (
+                <a
+                  key={contact.id}
+                  href={href}
+                  className="flex items-center justify-between p-2.5 rounded-xl bg-white border border-[#E9D8DE] hover:border-[#A70F43] transition-colors text-xs"
+                >
+                  <span className="font-bold text-[#2F2B2D] flex items-center gap-1.5">
+                    <MessageSquareText className="w-3.5 h-3.5 text-[#A70F43]" />
+                    {contact.name}
+                  </span>
+                  <span className="font-mono text-[#7B7280]">{contact.phone}</span>
+                </a>
+              ))}
             </div>
+
+            <a
+              href="tel:112"
+              className="flex items-center justify-center gap-1.5 py-2 rounded-xl bg-white border border-[#E9D8DE] hover:border-[#A70F43] text-xs font-bold text-[#2F2B2D] transition-colors"
+            >
+              <Phone className="w-3.5 h-3.5 text-[#A70F43]" />
+              Call Police (112)
+            </a>
+
             <button
               onClick={() => setDispatchStage('idle')}
-              className="px-4 py-1.5 rounded-xl bg-[#FFF8F9] text-[#2F2B2D] font-bold text-xs border border-[#E9D8DE]"
+              className="w-full px-4 py-1.5 rounded-xl bg-[#FFF8F9] text-[#2F2B2D] font-bold text-xs border border-[#E9D8DE]"
             >
               Reset SOS Status
             </button>
@@ -286,4 +406,3 @@ export const SosDialog: React.FC<SosDialogProps> = ({
     </div>
   );
 };
-
