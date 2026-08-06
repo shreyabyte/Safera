@@ -616,4 +616,8 @@ export const OfflineEmergencyToolkit: React.FC<
       </div>
     </div>
   );
+<<<<<<< HEAD
 };
+=======
+};
+>>>>>>> 4a7543f (change)
