@@ -439,7 +439,7 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
                 Offline Emergency Toolkit
               </h4>
               <p className="text-xs text-[#825D6B] mt-0.5">
-                Works with no signal — siren, fake call & flashlight
+                Siren, fake call & flashlight
               </p>
             </div>
           </div>
@@ -678,5 +678,12 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
         </div>
       </div>
     </div>
+    
+    <LiveLocationShareModal
+      isOpen={isLiveLocationModalOpen}
+      onClose={() => setIsLiveLocationModalOpen(false)}
+      locationLabel={selectedLocation?.name}
+    />
+    </>
   );
 };
