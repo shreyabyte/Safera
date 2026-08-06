@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { SafetyLocation, CommunityReport } from '../types';
 import {
   MapPin,
@@ -31,6 +31,42 @@ interface SafetyMapProps {
   setActiveTab?: (tab: string) => void;
 }
 
+// Translates Open-Meteo's numeric WMO weather codes into a short label.
+const getWeatherLabel = (code: number): string => {
+  if (code === 0) return 'Clear';
+  if ([1, 2, 3].includes(code)) return 'Cloudy';
+  if ([45, 48].includes(code)) return 'Foggy';
+  if ([51, 53, 55, 56, 57].includes(code)) return 'Drizzle';
+  if ([61, 63, 65, 66, 67, 80, 81, 82].includes(code)) return 'Rain';
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return 'Snow';
+  if ([95, 96, 99].includes(code)) return 'Storm';
+  return 'Clear';
+};
+
+// fetch() with a hard timeout, so a slow/hanging network call can never
+// leave the UI stuck loading forever — it just fails fast and falls back.
+const fetchWithTimeout = async (
+  url: string,
+  options: RequestInit,
+  timeoutMs: number,
+): Promise<Response> => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
+
+interface LiveRiskData {
+  safetyScore: number;
+  riskLevel: string;
+  summary: string;
+  factors: string[];
+  safetyTips: string[];
+}
+
 export const SafetyMap: React.FC<SafetyMapProps> = ({
   locations,
   reports,
@@ -43,6 +79,148 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showAccessibilityOverlay, setShowAccessibilityOverlay] = useState(false);
   const [showPoliceBoothsOnly] = useState(false);
+
+  // --- Live time (always safe: pure client-side clock, nothing to fail) ---
+  const [currentTime, setCurrentTime] = useState<Date>(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 30000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // --- Live location + weather (best-effort, independent of the score) ---
+  const [liveLocationLabel, setLiveLocationLabel] = useState<string>('Locating…');
+  const [liveTemp, setLiveTemp] = useState<string>('--°');
+  const [liveWeatherDesc, setLiveWeatherDesc] = useState<string>('Loading...');
+
+  // --- Live AI safety score for the user's real position ---
+  // status starts 'loading' and can only ever move to one of: 'live'
+  // (real score arrived), 'fallback' (score call failed, use demo data),
+  // or 'denied' (no geolocation permission/support). The hero card always
+  // has something valid to render for every one of these states.
+  const [liveScoreStatus, setLiveScoreStatus] = useState<
+    'loading' | 'live' | 'fallback' | 'denied'
+  >('loading');
+  const [liveScoreData, setLiveScoreData] = useState<LiveRiskData | null>(null);
+
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setLiveLocationLabel('Location unavailable');
+      setLiveWeatherDesc('Unavailable');
+      setLiveScoreStatus('denied');
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude } = pos.coords;
+        let weatherDescLocal = 'Clear';
+
+        // Weather — best-effort, never blocks the score call.
+        try {
+          const weatherRes = await fetchWithTimeout(
+            `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code`,
+            {},
+            6000,
+          );
+          if (!weatherRes.ok) throw new Error(`weather responded ${weatherRes.status}`);
+          const weatherData = await weatherRes.json();
+          weatherDescLocal = getWeatherLabel(weatherData.current.weather_code);
+          setLiveTemp(`${Math.round(weatherData.current.temperature_2m)}°`);
+          setLiveWeatherDesc(weatherDescLocal);
+        } catch (err) {
+          console.error('Weather fetch failed', err);
+          setLiveWeatherDesc('Unavailable');
+        }
+
+        // Reverse geocode — best-effort, falls back to a generic label.
+        let readableName = 'Your current area';
+        try {
+          const geoRes = await fetchWithTimeout(
+            `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}`,
+            {},
+            6000,
+          );
+          if (!geoRes.ok) throw new Error(`reverse geocode responded ${geoRes.status}`);
+          const geoData = await geoRes.json();
+          const addr = geoData.address || {};
+          readableName =
+            addr.road ||
+            addr.suburb ||
+            addr.neighbourhood ||
+            geoData.display_name?.split(',').slice(0, 2).join(',') ||
+            'Your current area';
+          setLiveLocationLabel(readableName);
+        } catch (err) {
+          console.error('Reverse geocode failed', err);
+          setLiveLocationLabel(readableName);
+        }
+
+        // Live safety score for the real position — the critical path.
+        // Any failure here (network, bad response shape, non-200) falls
+        // back to the existing demo location's score rather than breaking
+        // the hero card.
+        try {
+          const hour = new Date().getHours();
+          const approxTimeOfDay =
+            hour >= 5 && hour < 17
+              ? 'Day'
+              : hour >= 17 && hour < 20
+              ? 'Dusk'
+              : hour >= 20 && hour < 24
+              ? 'Night'
+              : 'Late Night';
+
+          const riskRes = await fetchWithTimeout(
+            '/api/ai/predict-risk',
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                locationName: readableName,
+                timeOfDay: approxTimeOfDay,
+                weather: weatherDescLocal,
+                crowdDensity: 'Moderate',
+                firCount: 1,
+                recentReports: [],
+              }),
+            },
+            6000,
+          );
+
+          if (!riskRes.ok) throw new Error(`predict-risk responded ${riskRes.status}`);
+          const riskData = await riskRes.json();
+
+          if (
+            typeof riskData.safetyScore === 'number' &&
+            typeof riskData.riskLevel === 'string'
+          ) {
+            setLiveScoreData(riskData);
+            setLiveScoreStatus('live');
+          } else {
+            throw new Error('predict-risk returned an unexpected shape');
+          }
+        } catch (err) {
+          console.error('Live risk score failed, falling back to demo location score', err);
+          setLiveScoreStatus('fallback');
+        }
+      },
+      (err) => {
+        console.warn('Geolocation permission denied/unavailable', err);
+        setLiveLocationLabel('Location permission denied');
+        setLiveWeatherDesc('Enable location for live weather');
+        setLiveScoreStatus('denied');
+      },
+    );
+  }, []);
+
+  // What the hero card actually renders: live score once it arrives,
+  // otherwise the existing demo location data — so the card is always
+  // populated, never blank, even before the live call resolves.
+  const displaySafetyScore =
+    liveScoreStatus === 'live' && liveScoreData ? liveScoreData.safetyScore : selectedLocation.safetyScore;
+  const displayRiskLabel =
+    liveScoreStatus === 'live' && liveScoreData ? liveScoreData.riskLevel : 'Safe zone';
 
   // AI Risk State
   const [isAnalyzingAi, setIsAnalyzingAi] = useState(false);
@@ -106,12 +284,29 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           <div className="flex items-start justify-between gap-4">
             {/* Left: Score Details */}
             <div className="space-y-1">
-              <span className="text-[11px] sm:text-xs font-bold tracking-widest text-[#6B2F42] uppercase">
-                CURRENT SAFETY SCORE
-              </span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[11px] sm:text-xs font-bold tracking-widest text-[#6B2F42] uppercase">
+                  CURRENT SAFETY SCORE
+                </span>
+                {liveScoreStatus === 'live' && (
+                  <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-600 text-white uppercase tracking-wide">
+                    Live
+                  </span>
+                )}
+                {liveScoreStatus === 'loading' && (
+                  <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-white/50 text-[#6B2F42] uppercase tracking-wide animate-pulse">
+                    Calculating…
+                  </span>
+                )}
+                {(liveScoreStatus === 'fallback' || liveScoreStatus === 'denied') && (
+                  <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-white/50 text-[#6B2F42] uppercase tracking-wide">
+                    Reference: {selectedLocation.name}
+                  </span>
+                )}
+              </div>
               <div className="flex items-baseline gap-1.5 pt-1">
                 <span className="text-5xl sm:text-6xl font-bold text-[#31141E] tracking-tight leading-none">
-                  {selectedLocation.safetyScore}
+                  {displaySafetyScore}
                 </span>
                 <span className="text-lg sm:text-xl font-bold text-[#6B2F42]">
                   / 100
@@ -122,7 +317,7 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
               <div className="pt-2">
                 <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/60 backdrop-blur-xs text-[#31141E] text-xs font-semibold shadow-2xs">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                  Safe zone
+                  {displayRiskLabel}
                 </span>
               </div>
             </div>
@@ -147,7 +342,7 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
                   stroke="#31141E"
                   strokeWidth="10"
                   strokeDasharray={`${2 * Math.PI * 38}`}
-                  strokeDashoffset={`${2 * Math.PI * 38 * (1 - selectedLocation.safetyScore / 100)}`}
+                  strokeDashoffset={`${2 * Math.PI * 38 * (1 - displaySafetyScore / 100)}`}
                   strokeLinecap="round"
                   fill="transparent"
                 />
@@ -159,17 +354,17 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           <div className="flex flex-wrap items-center gap-2.5 pt-1">
             <div className="bg-white/60 backdrop-blur-xs text-[#31141E] text-xs font-semibold px-3.5 py-2 rounded-full flex items-center gap-1.5 shadow-2xs">
               <MapPin className="w-3.5 h-3.5 text-[#8A1E41]" />
-              <span>{selectedLocation.name}</span>
+              <span>{liveLocationLabel}</span>
             </div>
 
             <div className="bg-white/60 backdrop-blur-xs text-[#31141E] text-xs font-semibold px-3.5 py-2 rounded-full flex items-center gap-1.5 shadow-2xs">
               <Cloud className="w-3.5 h-3.5 text-[#8A1E41]" />
-              <span>28° Clear</span>
+              <span>{liveTemp} {liveWeatherDesc}</span>
             </div>
 
             <div className="bg-white/60 backdrop-blur-xs text-[#31141E] text-xs font-semibold px-3.5 py-2 rounded-full flex items-center gap-1.5 shadow-2xs">
               <Clock className="w-3.5 h-3.5 text-[#8A1E41]" />
-              <span>2:14 PM</span>
+              <span>{currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
             </div>
           </div>
         </div>
@@ -250,7 +445,7 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
                 Offline Emergency Toolkit
               </h4>
               <p className="text-xs text-[#825D6B] mt-0.5">
-                 Siren, fake call & offline siren
+                Siren, fake call & flashlight
               </p>
             </div>
           </div>
@@ -266,7 +461,7 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
             { id: 'legal', label: 'Legal Advisor', icon: Scale },
             { id: 'community', label: 'Community', icon: Users },
             { id: 'toolkit', label: 'Offline Toolkit', icon: Phone },
-            { id: 'companion', label: 'AI Companion', icon: Volume2 },
+            { id: 'companion', label: 'AI Safety Companion', icon: Volume2 },
           ].map((chip) => {
             const Icon = chip.icon;
             return (
@@ -489,7 +684,7 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
         </div>
       </div>
     </div>
-
+    
     <LiveLocationShareModal
       isOpen={isLiveLocationModalOpen}
       onClose={() => setIsLiveLocationModalOpen(false)}
