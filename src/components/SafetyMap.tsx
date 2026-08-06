@@ -21,6 +21,8 @@ import {
   Volume2,
 } from 'lucide-react';
 
+import { LiveLocationShareModal } from './LiveLocationShareModal';
+
 interface SafetyMapProps {
   locations: SafetyLocation[];
   reports: CommunityReport[];
@@ -87,6 +89,8 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
     }
   };
 
+  const [isLiveLocationModalOpen, setIsLiveLocationModalOpen] = useState(false);
+
   const filteredLocations = locations.filter((loc) => {
     if (showPoliceBoothsOnly && !loc.accessibility.policeBooths) return false;
     if (showAccessibilityOverlay && !loc.accessibility.wheelchairRamps) return false;
@@ -94,6 +98,7 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
   });
 
   return (
+    <>
     <div className="space-y-6">
       {/* 1. HERO SAFETY SCORE CARD (Matches Screenshot) */}
       <div className="relative bg-gradient-to-br from-[#F8D7CD] via-[#EFA6B6] to-[#CF748B] border border-[#F2E5DE] rounded-[32px] p-6 sm:p-8 shadow-[0_12px_36px_rgba(207,116,139,0.18)] text-[#31141E] overflow-hidden">
@@ -197,7 +202,7 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
 
           {/* Card 2: Share Live Location */}
           <div
-            onClick={() => alert(`Live location broadcast link active for ${selectedLocation.name}. Emergency contacts notified via SMS.`)}
+            onClick={() => setIsLiveLocationModalOpen(true)}
             className="bg-white rounded-[26px] p-4 sm:p-5 shadow-[0_4px_20px_rgba(49,20,30,0.03)] border border-[#F2E5DE] flex items-center gap-4 hover:shadow-md transition-all cursor-pointer group"
           >
             <div className="w-12 h-12 rounded-full bg-[#F7E5EC] flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
@@ -484,7 +489,12 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
         </div>
       </div>
     </div>
+
+    <LiveLocationShareModal
+      isOpen={isLiveLocationModalOpen}
+      onClose={() => setIsLiveLocationModalOpen(false)}
+      locationLabel={selectedLocation?.name}
+    />
+    </>
   );
 };
-
-

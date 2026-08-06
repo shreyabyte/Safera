@@ -13,6 +13,7 @@ import { OfflineEmergencyToolkit } from './components/OfflineEmergencyToolkit';
 import { AiCompanion } from './components/AiCompanion';
 import { GuardIaLogo } from './components/GuardIaLogo';
 import { WifiOff, AlertTriangle } from 'lucide-react';
+import { useOnlineStatus } from './hooks/useOnlineStatus';
 
 import {
   INITIAL_LOCATIONS,
@@ -50,7 +51,16 @@ export default function App() {
     autoCheckInIntervalMinutes: 30,
   });
 
-  const [isOffline, setIsOffline] = useState(false);
+  // Real connectivity, not a manual mock: reflects navigator.onLine + the
+  // online/offline events. `forceOfflineDemo` layers on top purely so the
+  // existing "Offline Maps: LOADED/STANDBY" switch in the toolkit still has
+  // something to toggle for testing — you can force offline mode on top of
+  // a real connection, but you can't fake being online when you're not.
+  const isOnline = useOnlineStatus();
+  const [forceOfflineDemo, setForceOfflineDemo] = useState(false);
+  const isOffline = forceOfflineDemo || !isOnline;
+  const setIsOffline = (val: boolean) => setForceOfflineDemo(val);
+
   const [isSosOpen, setIsSosOpen] = useState(false);
   const [isRecordingVault, setIsRecordingVault] = useState(false);
   const [selectedRouteTarget, setSelectedRouteTarget] = useState<SafetyLocation | undefined>(undefined);
@@ -185,8 +195,10 @@ export default function App() {
           {activeTab === 'toolkit' && (
             <OfflineEmergencyToolkit
               isOffline={isOffline}
+              isRealOffline={!isOnline}
               setIsOffline={setIsOffline}
               onTriggerSos={() => setIsSosOpen(true)}
+              contacts={contacts}
             />
           )}
 
@@ -201,6 +213,7 @@ export default function App() {
         contacts={contacts}
         onAddContact={handleAddContact}
         onDeleteContact={handleDeleteContact}
+        isOffline={isOffline}
       />
 
       {/* Footer */}
