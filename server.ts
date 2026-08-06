@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
@@ -282,6 +283,99 @@ app.post('/api/ai/companion-chat', async (req, res) => {
     console.error('Error in companion-chat:', error);
     return res.status(500).json({ error: error.message || 'Companion chat failed' });
   }
+});
+
+// In-memory Live Location session store
+// NOTE: this resets on server restart and isn't shared across multiple server instances.
+// For production, back this with a real database (e.g. Redis/Postgres) instead.
+interface LiveLocationSession {
+  id: string;
+  lat: number;
+  lng: number;
+  accuracy: number | null;
+  label: string;
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+const LIVE_SESSION_TTL_MS = 2 * 60 * 60 * 1000; // sessions auto-expire after 2 hours
+const liveLocationSessions = new Map<string, LiveLocationSession>();
+
+function isSessionExpired(session: LiveLocationSession) {
+  return Date.now() - session.createdAt > LIVE_SESSION_TTL_MS;
+}
+
+// Periodically sweep expired sessions so memory doesn't grow unbounded
+setInterval(() => {
+  for (const [id, session] of liveLocationSessions) {
+    if (isSessionExpired(session)) liveLocationSessions.delete(id);
+  }
+}, 5 * 60 * 1000);
+
+// API Route: Start a Live Location sharing session
+app.post('/api/live-location/start', (req, res) => {
+  const { lat, lng, accuracy, label } = req.body || {};
+  if (typeof lat !== 'number' || typeof lng !== 'number') {
+    return res.status(400).json({ error: 'lat and lng (numbers) are required' });
+  }
+
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  const session: LiveLocationSession = {
+    id,
+    lat,
+    lng,
+    accuracy: typeof accuracy === 'number' ? accuracy : null,
+    label: typeof label === 'string' && label.trim() ? label.trim() : 'Safera User',
+    active: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+  liveLocationSessions.set(id, session);
+  return res.status(201).json(session);
+});
+
+// API Route: Push a new position update for an active session
+app.post('/api/live-location/:id/update', (req, res) => {
+  const session = liveLocationSessions.get(req.params.id);
+  if (!session || isSessionExpired(session)) {
+    return res.status(404).json({ error: 'Live location session not found or expired' });
+  }
+  if (!session.active) {
+    return res.status(410).json({ error: 'Live location session has been stopped' });
+  }
+
+  const { lat, lng, accuracy } = req.body || {};
+  if (typeof lat !== 'number' || typeof lng !== 'number') {
+    return res.status(400).json({ error: 'lat and lng (numbers) are required' });
+  }
+
+  session.lat = lat;
+  session.lng = lng;
+  session.accuracy = typeof accuracy === 'number' ? accuracy : session.accuracy;
+  session.updatedAt = Date.now();
+  return res.json(session);
+});
+
+// API Route: Fetch the current state of a session (used by the public viewer page)
+app.get('/api/live-location/:id', (req, res) => {
+  const session = liveLocationSessions.get(req.params.id);
+  if (!session || isSessionExpired(session)) {
+    return res.status(404).json({ error: 'Live location session not found or expired' });
+  }
+  return res.json(session);
+});
+
+// API Route: Stop sharing a session
+app.post('/api/live-location/:id/stop', (req, res) => {
+  const session = liveLocationSessions.get(req.params.id);
+  if (!session) {
+    return res.status(404).json({ error: 'Live location session not found' });
+  }
+  session.active = false;
+  session.updatedAt = Date.now();
+  return res.json(session);
 });
 
 async function startServer() {

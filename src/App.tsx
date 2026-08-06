@@ -4,6 +4,7 @@ import { SafetyMap } from './components/SafetyMap';
 import { RouteGenerator } from './components/RouteGenerator';
 import { AccessibilityMapper } from './components/AccessibilityMapper';
 import { MovementDetection } from './components/MovementDetection';
+import { SafetyCheckOverlay } from './components/SafetyCheckOverlay';
 import { SosDialog } from './components/SosDialog';
 import { EvidenceVault } from './components/EvidenceVault';
 import { VitalSigns } from './components/VitalSigns';
@@ -13,6 +14,8 @@ import { OfflineEmergencyToolkit } from './components/OfflineEmergencyToolkit';
 import { AiCompanion } from './components/AiCompanion';
 import { GuardIaLogo } from './components/GuardIaLogo';
 import { WifiOff, AlertTriangle } from 'lucide-react';
+import { useOnlineStatus } from './hooks/useOnlineStatus';
+import { useMotionSafetyDetection } from './hooks/useMotionSafetyDetection';
 
 import {
   INITIAL_LOCATIONS,
@@ -50,10 +53,33 @@ export default function App() {
     autoCheckInIntervalMinutes: 30,
   });
 
-  const [isOffline, setIsOffline] = useState(false);
+  // Real connectivity, not a manual mock: reflects navigator.onLine + the
+  // online/offline events. `forceOfflineDemo` layers on top purely so the
+  // existing "Offline Maps: LOADED/STANDBY" switch in the toolkit still has
+  // something to toggle for testing — you can force offline mode on top of
+  // a real connection, but you can't fake being online when you're not.
+  const isOnline = useOnlineStatus();
+  const [forceOfflineDemo, setForceOfflineDemo] = useState(false);
+  const isOffline = forceOfflineDemo || !isOnline;
+  const setIsOffline = (val: boolean) => setForceOfflineDemo(val);
+
   const [isSosOpen, setIsSosOpen] = useState(false);
   const [isRecordingVault, setIsRecordingVault] = useState(false);
   const [selectedRouteTarget, setSelectedRouteTarget] = useState<SafetyLocation | undefined>(undefined);
+
+  // Mounted once, here at the app root, so shake/fall/drag detection (and
+  // the resulting "confirm you're safe or SOS auto-dispatches" countdown)
+  // keeps running no matter which tab is currently open — Map, Vault,
+  // Companion, wherever. Previously this listener only existed inside the
+  // Sensors tab's own component and stopped the moment you navigated away.
+  const {
+    activeCountdown,
+    activeAlarmType,
+    gForce,
+    confirmSafe,
+    triggerSafetyCheck,
+    dispatchNow,
+  } = useMotionSafetyDetection(sensorSettings, () => setIsSosOpen(true));
 
   const handleAddReport = (newReport: CommunityReport) => {
     setReports((prev) => [newReport, ...prev]);
@@ -150,6 +176,8 @@ export default function App() {
               settings={sensorSettings}
               onUpdateSettings={setSensorSettings}
               onTriggerSos={() => setIsSosOpen(true)}
+              gForce={gForce}
+              triggerSafetyCheck={triggerSafetyCheck}
             />
           )}
 
@@ -185,14 +213,25 @@ export default function App() {
           {activeTab === 'toolkit' && (
             <OfflineEmergencyToolkit
               isOffline={isOffline}
+              isRealOffline={!isOnline}
               setIsOffline={setIsOffline}
               onTriggerSos={() => setIsSosOpen(true)}
+              contacts={contacts}
             />
           )}
 
           {activeTab === 'companion' && <AiCompanion />}
         </main>
       </div>
+
+      {/* Global Safety Check Countdown — renders on top of whatever tab is
+          open, since the motion listener above now runs app-wide. */}
+      <SafetyCheckOverlay
+        activeCountdown={activeCountdown}
+        activeAlarmType={activeAlarmType}
+        onConfirmSafe={confirmSafe}
+        onDispatchNow={dispatchNow}
+      />
 
       {/* SOS Emergency Modal */}
       <SosDialog
@@ -201,6 +240,7 @@ export default function App() {
         contacts={contacts}
         onAddContact={handleAddContact}
         onDeleteContact={handleDeleteContact}
+        isOffline={isOffline}
       />
 
       {/* Footer */}
