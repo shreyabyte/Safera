@@ -122,4 +122,5 @@ export interface FakeCallConfig {
   callerNumber: string;
   delaySeconds: number;
   voiceScript: string;
+  langCode: string; 
 }
