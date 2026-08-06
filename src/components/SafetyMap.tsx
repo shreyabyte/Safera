@@ -215,7 +215,7 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
 
           {/* Card 3: AI Safety Companion */}
           <div
-            onClick={() => alert('Launching Safera Voice AI Safety Companion.')}
+            onClick={() => setActiveTab?.('companion')}
             className="bg-white rounded-[26px] p-4 sm:p-5 shadow-[0_4px_20px_rgba(49,20,30,0.03)] border border-[#F2E5DE] flex items-center gap-4 hover:shadow-md transition-all cursor-pointer group"
           >
             <div className="w-12 h-12 rounded-full bg-[#F8E1E8] flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
@@ -231,9 +231,10 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
             </div>
           </div>
 
-          {/* Card 4: Emergency Toolkit */}
+        
+            {/* Card 4: Offline Emergency Toolkit */}
           <div
-            onClick={() => alert('Emergency Siren & Offline Torch Toolkit active.')}
+            onClick={() => setActiveTab?.('toolkit')}
             className="bg-white rounded-[26px] p-4 sm:p-5 shadow-[0_4px_20px_rgba(49,20,30,0.03)] border border-[#F2E5DE] flex items-center gap-4 hover:shadow-md transition-all cursor-pointer group"
           >
             <div className="w-12 h-12 rounded-full bg-[#FAF3DC] flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
@@ -241,10 +242,10 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
             </div>
             <div>
               <h4 className="text-sm sm:text-base font-bold text-[#31141E]">
-                Emergency Toolkit
+                Offline Emergency Toolkit
               </h4>
               <p className="text-xs text-[#825D6B] mt-0.5">
-                Siren, fake call & offline siren
+                 Siren, fake call & offline siren
               </p>
             </div>
           </div>
