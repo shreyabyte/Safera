@@ -4,6 +4,7 @@ import { SafetyMap } from './components/SafetyMap';
 import { RouteGenerator } from './components/RouteGenerator';
 import { AccessibilityMapper } from './components/AccessibilityMapper';
 import { MovementDetection } from './components/MovementDetection';
+import { SafetyCheckOverlay } from './components/SafetyCheckOverlay';
 import { SosDialog } from './components/SosDialog';
 import { EvidenceVault } from './components/EvidenceVault';
 import { VitalSigns } from './components/VitalSigns';
@@ -14,6 +15,7 @@ import { AiCompanion } from './components/AiCompanion';
 import { GuardIaLogo } from './components/GuardIaLogo';
 import { WifiOff, AlertTriangle } from 'lucide-react';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
+import { useMotionSafetyDetection } from './hooks/useMotionSafetyDetection';
 
 import {
   INITIAL_LOCATIONS,
@@ -64,6 +66,20 @@ export default function App() {
   const [isSosOpen, setIsSosOpen] = useState(false);
   const [isRecordingVault, setIsRecordingVault] = useState(false);
   const [selectedRouteTarget, setSelectedRouteTarget] = useState<SafetyLocation | undefined>(undefined);
+
+  // Mounted once, here at the app root, so shake/fall/drag detection (and
+  // the resulting "confirm you're safe or SOS auto-dispatches" countdown)
+  // keeps running no matter which tab is currently open — Map, Vault,
+  // Companion, wherever. Previously this listener only existed inside the
+  // Sensors tab's own component and stopped the moment you navigated away.
+  const {
+    activeCountdown,
+    activeAlarmType,
+    gForce,
+    confirmSafe,
+    triggerSafetyCheck,
+    dispatchNow,
+  } = useMotionSafetyDetection(sensorSettings, () => setIsSosOpen(true));
 
   const handleAddReport = (newReport: CommunityReport) => {
     setReports((prev) => [newReport, ...prev]);
@@ -160,6 +176,8 @@ export default function App() {
               settings={sensorSettings}
               onUpdateSettings={setSensorSettings}
               onTriggerSos={() => setIsSosOpen(true)}
+              gForce={gForce}
+              triggerSafetyCheck={triggerSafetyCheck}
             />
           )}
 
@@ -205,6 +223,15 @@ export default function App() {
           {activeTab === 'companion' && <AiCompanion />}
         </main>
       </div>
+
+      {/* Global Safety Check Countdown — renders on top of whatever tab is
+          open, since the motion listener above now runs app-wide. */}
+      <SafetyCheckOverlay
+        activeCountdown={activeCountdown}
+        activeAlarmType={activeAlarmType}
+        onConfirmSafe={confirmSafe}
+        onDispatchNow={dispatchNow}
+      />
 
       {/* SOS Emergency Modal */}
       <SosDialog
