@@ -1,6 +1,5 @@
-<<<<<<< HEAD
 import React, { useState, useRef, useEffect } from "react";
-import { FakeCallConfig } from "../types";
+import { EmergencyContact, FakeCallConfig } from "../types";
 import { GuardIaLogo } from "./GuardIaLogo";
 import {
   Phone,
@@ -17,16 +16,16 @@ import {
   Zap,
   Shield,
   HelpCircle,
+  MessageSquareText,
 } from "lucide-react";
 import { EMERGENCY_HOTLINES } from "../data/mockData";
-=======
-import React, { useEffect, useState } from 'react';
-import { EmergencyContact, FakeCallConfig } from '../types';
-import { GuardIaLogo } from './GuardIaLogo';
-import { Phone, Volume2, Flashlight, WifiOff, MapPin, Send, AlertTriangle, ShieldCheck, Clock, PhoneIncoming, PhoneOff, Zap, Shield, HelpCircle, MessageSquareText } from 'lucide-react';
-import { EMERGENCY_HOTLINES } from '../data/mockData';
-import { getBestEffortLocation, getCachedLocation, buildSosMessage, buildSmsLinks, SosCoords } from '../utils/sos';
->>>>>>> 7d2f3aa (changes)
+import {
+  getBestEffortLocation,
+  getCachedLocation,
+  buildSosMessage,
+  buildSmsLinks,
+  SosCoords,
+} from "../utils/sos";
 
 interface OfflineEmergencyToolkitProps {
   isOffline: boolean;
@@ -36,7 +35,6 @@ interface OfflineEmergencyToolkitProps {
   contacts: EmergencyContact[];
 }
 
-<<<<<<< HEAD
 // Languages offered for the fake-call voice script. `code` must match a
 // BCP-47 lang tag (e.g. "hi-IN") so we can match it against
 // speechSynthesis voices. Actual availability depends on the user's
@@ -52,15 +50,7 @@ const FAKE_CALL_LANGUAGES: { code: string; label: string }[] = [
 
 export const OfflineEmergencyToolkit: React.FC<
   OfflineEmergencyToolkitProps
-> = ({ isOffline, setIsOffline, onTriggerSos }) => {
-=======
-export const OfflineEmergencyToolkit: React.FC<OfflineEmergencyToolkitProps> = ({
-  isOffline,
-  isRealOffline,
-  setIsOffline,
-  onTriggerSos,
-  contacts,
-}) => {
+> = ({ isOffline, isRealOffline, setIsOffline, onTriggerSos, contacts }) => {
   // Real location for the SMS fallback panel — start from whatever's cached
   // so the panel is useful instantly, then refine with a live fix.
   const [coords, setCoords] = useState<SosCoords | null>(() => getCachedLocation());
@@ -81,7 +71,7 @@ export const OfflineEmergencyToolkit: React.FC<OfflineEmergencyToolkitProps> = (
 
   const sosMessage = buildSosMessage(coords);
   const smsLinks = buildSmsLinks(contacts, sosMessage);
->>>>>>> 7d2f3aa (changes)
+
   // Fake Call State
   const [fakeCallActive, setFakeCallActive] = useState(false);
   const [fakeCallTimerSec, setFakeCallTimerSec] = useState<number | null>(null);
@@ -314,7 +304,11 @@ export const OfflineEmergencyToolkit: React.FC<OfflineEmergencyToolkitProps> = (
           <button
             onClick={() => setIsOffline(!isOffline)}
             disabled={isRealOffline}
-            title={isRealOffline ? 'Your device is actually offline right now — can\'t be toggled off' : 'Force offline mode for testing'}
+            title={
+              isRealOffline
+                ? "Your device is actually offline right now — can't be toggled off"
+                : "Force offline mode for testing"
+            }
             className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-all flex items-center space-x-2 shrink-0 disabled:cursor-not-allowed disabled:opacity-80 ${
               isOffline
                 ? "bg-[#A70F43] text-white border-[#8D0D39] shadow-sm"
@@ -322,13 +316,13 @@ export const OfflineEmergencyToolkit: React.FC<OfflineEmergencyToolkitProps> = (
             }`}
           >
             <WifiOff className="w-4 h-4" />
-<<<<<<< HEAD
-            <span>Offline Maps: {isOffline ? "LOADED" : "STANDBY"}</span>
-=======
             <span>
-              {isRealOffline ? 'Offline (detected)' : isOffline ? 'Offline (test mode)' : 'Online'}
+              {isRealOffline
+                ? "Offline (detected)"
+                : isOffline
+                ? "Offline Maps: LOADED"
+                : "Offline Maps: STANDBY"}
             </span>
->>>>>>> 7d2f3aa (changes)
           </button>
         </div>
       </div>
@@ -570,24 +564,6 @@ export const OfflineEmergencyToolkit: React.FC<OfflineEmergencyToolkitProps> = (
 
           {/* SMS Alert Fallback Generator — real location, real contacts */}
           <div className="p-3 rounded-xl bg-[#FFF8F9] border border-[#E9D8DE] space-y-2 text-xs">
-<<<<<<< HEAD
-            <span className="font-bold text-[#2F2B2D] flex items-center gap-1.5">
-              <Send className="w-3.5 h-3.5 text-[#A70F43]" />
-              Offline SMS Emergency Alert Payload
-            </span>
-            <p className="text-[#2F2B2D] font-mono text-[10px] bg-white p-2 rounded-lg border border-[#E9D8DE]">
-              EMERGENCY SOS! I need help at Lat: 28.6139, Lng: 77.2090. Track
-              live: https://safera.app/track/sos-9821
-            </p>
-            <a
-              href={`sms:?body=${encodeURIComponent(
-                "EMERGENCY SOS! I need help at Lat: 28.6139, Lng: 77.2090. Track live: https://safera.app/track/sos-9821",
-              )}`}
-              className="inline-block py-1.5 px-3 rounded-xl bg-[#A70F43] text-white font-bold text-xs border border-[#8D0D39]"
-            >
-              Open Device Messages App (SMS)
-            </a>
-=======
             <div className="flex items-center justify-between">
               <span className="font-bold text-[#2F2B2D] flex items-center gap-1.5">
                 <Send className="w-3.5 h-3.5 text-[#A70F43]" />
@@ -599,7 +575,7 @@ export const OfflineEmergencyToolkit: React.FC<OfflineEmergencyToolkitProps> = (
                 className="text-[10px] font-bold text-[#A70F43] flex items-center gap-1 disabled:opacity-50"
               >
                 <MapPin className="w-3 h-3" />
-                {locatingNow ? 'Locating…' : 'Refresh location'}
+                {locatingNow ? "Locating…" : "Refresh location"}
               </button>
             </div>
 
@@ -609,7 +585,8 @@ export const OfflineEmergencyToolkit: React.FC<OfflineEmergencyToolkitProps> = (
 
             {smsLinks.length === 0 ? (
               <p className="text-[10px] text-[#7B7280]">
-                No contacts have SMS alerts enabled yet — add or enable one from the SOS dialog's contacts list.
+                No contacts have SMS alerts enabled yet — add or enable one
+                from the SOS dialog's contacts list.
               </p>
             ) : (
               <div className="space-y-1.5">
@@ -623,22 +600,20 @@ export const OfflineEmergencyToolkit: React.FC<OfflineEmergencyToolkitProps> = (
                       <MessageSquareText className="w-3.5 h-3.5" />
                       Text {contact.name}
                     </span>
-                    <span className="font-mono text-[10px] opacity-80">{contact.phone}</span>
+                    <span className="font-mono text-[10px] opacity-80">
+                      {contact.phone}
+                    </span>
                   </a>
                 ))}
               </div>
             )}
             <p className="text-[9px] text-[#7B7280]">
-              Opens your phone's own Messages app over cellular signal — works even with no data connection.
+              Opens your phone's own Messages app over cellular signal — works
+              even with no data connection.
             </p>
->>>>>>> 7d2f3aa (changes)
           </div>
         </div>
       </div>
     </div>
   );
-<<<<<<< HEAD
 };
-=======
-};
->>>>>>> 7d2f3aa (changes)
