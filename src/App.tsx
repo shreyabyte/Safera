@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { Navbar } from './components/Navbar';
+import { LandingPage } from './components/LandingPage';
+import { AuthPage } from './components/AuthPage';
 import { SafetyMap } from './components/SafetyMap';
 import { RouteGenerator } from './components/RouteGenerator';
 import { AccessibilityMapper } from './components/AccessibilityMapper';
@@ -26,13 +28,22 @@ import {
   INITIAL_LEGAL_ARTICLES,
 } from './data/mockData';
 
-import { SafetyLocation, CommunityReport, EmergencyContact, EvidenceItem, VitalSignData, MovementSensorSettings, RouteOption } from './types';
+import { SafetyLocation, CommunityReport, EmergencyContact, EvidenceItem, VitalSignData, MovementSensorSettings, RouteOption, UserProfile } from './types';
+import { getCurrentUser, logOut, demoLogin } from './lib/auth';
 
 export default function App() {
+  // 'landing' -> marketing page, 'auth' -> login/signup, 'dashboard' -> the app itself.
+  // Anyone with an active local session (from a previous login) skips
+  // straight to the dashboard on reload.
+  const [user, setUser] = useState<UserProfile | null>(() => getCurrentUser());
+  const [view, setView] = useState<'landing' | 'auth' | 'dashboard'>(() => (getCurrentUser() ? 'dashboard' : 'landing'));
+
   const [activeTab, setActiveTab] = useState<string>('map');
   const [locations, setLocations] = useState<SafetyLocation[]>(INITIAL_LOCATIONS);
   const [reports, setReports] = useState<CommunityReport[]>(INITIAL_REPORTS);
-  const [contacts, setContacts] = useState<EmergencyContact[]>(INITIAL_CONTACTS);
+  const [contacts, setContacts] = useState<EmergencyContact[]>(
+    user && user.emergencyContacts.length > 0 ? user.emergencyContacts : INITIAL_CONTACTS
+  );
   const [evidenceList, setEvidenceList] = useState<EvidenceItem[]>(INITIAL_EVIDENCE);
 
   const [vitals, setVitals] = useState<VitalSignData>({
@@ -128,6 +139,48 @@ export default function App() {
     alert(`Starting Safera Live Guided Navigation for "${route.name}". Live tracking link active.`);
   };
 
+  const handleAuthSuccess = (profile: UserProfile) => {
+    setUser(profile);
+    if (profile.emergencyContacts.length > 0) {
+      setContacts(profile.emergencyContacts);
+    }
+    setView('dashboard');
+  };
+
+  const handleLogout = () => {
+    logOut();
+    setUser(null);
+    setView('landing');
+  };
+
+  // Just navigates back to the marketing page without ending the session —
+  // the user stays logged in, so reopening the app (or clicking a "Get
+  // Started"/"Log In" button again) drops them straight back into the
+  // dashboard instead of asking them to log in again.
+  const handleBackToHome = () => {
+    setView('landing');
+  };
+
+  // Lets "Watch Demo" on the landing page drop straight into the full
+  // dashboard using the shared demo account, instead of the auth form.
+  const handleWatchDemo = async () => {
+    const profile = await demoLogin();
+    handleAuthSuccess(profile);
+  };
+
+  if (view === 'landing') {
+    return (
+      <LandingPage
+        onGetStarted={() => setView(user ? 'dashboard' : 'auth')}
+        onWatchDemo={handleWatchDemo}
+      />
+    );
+  }
+
+  if (view === 'auth') {
+    return <AuthPage onAuthSuccess={handleAuthSuccess} onBackToLanding={() => setView('landing')} />;
+  }
+
   return (
     <div className="min-h-screen bg-[#FCF7F1] text-[#221F20] font-sans flex flex-col justify-between">
       <div>
@@ -141,7 +194,9 @@ export default function App() {
           isRecordingVault={evidenceRecorder.isRecording}
           heartRate={vitals.heartRate}
           movementSensorsActive={sensorSettings.isEnabled}
-          userName="Shreya"
+          userName={user?.name || 'Shreya'}
+          onLogout={handleLogout}
+          onBackToHome={handleBackToHome}
         />
 
         {/* Offline Banner Indicator */}
@@ -167,6 +222,7 @@ export default function App() {
           {activeTab === 'routes' && (
             <RouteGenerator
               locations={locations}
+              reports={reports}
               selectedLocationTarget={selectedRouteTarget}
               onStartNavigation={handleStartNavigation}
             />

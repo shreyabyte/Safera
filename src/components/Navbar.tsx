@@ -12,6 +12,8 @@ import {
   Lock,
   Accessibility,
   Sparkles,
+  LogOut,
+  ArrowLeft,
 } from 'lucide-react';
 import { GuardIaLogo } from './GuardIaLogo';
 
@@ -25,6 +27,8 @@ interface NavbarProps {
   heartRate: number;
   movementSensorsActive: boolean;
   userName?: string;
+  onLogout?: () => void;
+  onBackToHome?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -32,6 +36,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   setActiveTab,
   onTriggerSos,
   userName = 'Shreya',
+  onLogout,
+  onBackToHome,
 }) => {
   // Dynamic greeting based on time of day
   const hour = new Date().getHours();
@@ -112,8 +118,18 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
           </div>
 
-          {/* Right Header Controls: SOS Alert + Circular White Logo Badge */}
+          {/* Right Header Controls: Back to Home + SOS Alert + Logo Badge + Logout */}
           <div className="flex items-center space-x-2.5 sm:space-x-4 shrink-0">
+            {onBackToHome && (
+              <button
+                onClick={onBackToHome}
+                className="hidden sm:flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-white border border-[#F2E5DE] text-[#825D6B] hover:text-[#8A1E41] hover:border-[#8A1E41]/30 font-semibold text-xs sm:text-sm transition-all cursor-pointer"
+                title="Back to Home"
+              >
+                <ArrowLeft className="w-4 h-4" /> Home
+              </button>
+            )}
+
             {/* Header SOS Emergency Button */}
             <button
               onClick={onTriggerSos}
@@ -127,6 +143,16 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             {/* Circular Safera Logo Badge matching SS */}
             <GuardIaLogo size="md" variant="icon" showText={false} />
+
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                className="p-2.5 rounded-full bg-white border border-[#F2E5DE] text-[#825D6B] hover:text-[#8A1E41] hover:border-[#8A1E41]/30 transition-all cursor-pointer"
+                title="Log out"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -174,6 +200,3 @@ export const Navbar: React.FC<NavbarProps> = ({
     </>
   );
 };
-
-
-

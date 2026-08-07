@@ -9,7 +9,7 @@ import { GoogleGenAI } from '@google/genai';
 dotenv.config({ quiet: true });
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Bumped from 10mb to 50mb: encrypted evidence recordings (video/audio,
 // base64-encoded — which inflates size ~33%) are sent as JSON bodies to
