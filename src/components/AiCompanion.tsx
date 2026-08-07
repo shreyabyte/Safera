@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { GuardIaLogo } from './GuardIaLogo';
 import { Volume2, VolumeX, Send, Sparkles, Shield, Heart, Clock, AlertTriangle, User } from 'lucide-react';
+import { getBestEffortLocation } from '../utils/sos';
+import { reverseGeocode } from '../lib/geocode';
 
 interface Message {
   id: string;
@@ -22,12 +24,28 @@ export const AiCompanion: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [checkInSec, setCheckInSec] = useState<number | null>(180);
+  // Resolved once on mount from real GPS + reverse geocoding, so the
+  // companion's AI context reflects where the user actually is instead of
+  // a fixed placeholder street name.
+  const [currentLocation, setCurrentLocation] = useState('your route');
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getBestEffortLocation().then(async (fix) => {
+      if (!fix || cancelled) return;
+      const name = await reverseGeocode(fix.lat, fix.lng);
+      if (!cancelled && name) setCurrentLocation(name);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Speech synthesis helper
   const speakText = (text: string) => {
@@ -60,7 +78,7 @@ export const AiCompanion: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userMessage: textToSend,
-          currentLocation: 'Central Walkway Corridor',
+          currentLocation,
           userStatus: 'Walking home',
         }),
       });

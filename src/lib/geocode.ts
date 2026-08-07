@@ -60,3 +60,27 @@ export async function searchPlaces(query: string, limit = 5): Promise<GeocodedPl
     displayName: d.display_name,
   }));
 }
+
+/**
+ * Reverse-geocodes a coordinate pair into a human-readable place name.
+ * Used anywhere we have a real GPS fix (evidence capture, community
+ * reports, the AI companion) and need to label it instead of falling
+ * back to a fixed placeholder location.
+ */
+export async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
+  try {
+    const params = new URLSearchParams({
+      lat: String(lat),
+      lon: String(lng),
+      format: 'json',
+    });
+    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?${params.toString()}`, {
+      headers: { 'Accept-Language': 'en' },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.display_name || null;
+  } catch {
+    return null;
+  }
+}

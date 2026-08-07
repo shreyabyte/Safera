@@ -79,6 +79,8 @@ export default function App() {
     confirmSafe,
     triggerSafetyCheck,
     dispatchNow,
+    motionPermission,
+    requestMotionPermission,
   } = useMotionSafetyDetection(sensorSettings, () => setIsSosOpen(true));
 
   const handleAddReport = (newReport: CommunityReport) => {
@@ -192,6 +194,8 @@ export default function App() {
               onTriggerSos={() => setIsSosOpen(true)}
               gForce={gForce}
               triggerSafetyCheck={triggerSafetyCheck}
+              motionPermission={motionPermission}
+              requestMotionPermission={requestMotionPermission}
             />
           )}
 
