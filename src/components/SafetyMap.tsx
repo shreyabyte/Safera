@@ -33,6 +33,7 @@ import {
   riskBandColor,
   type SafetyGridCell,
 } from '../utils/hotspot';
+import { normalizeRiskAnalysisResponse, type RiskAnalysisResult } from '../lib/riskAnalysis';
 
 interface SafetyMapProps {
   locations: SafetyLocation[];
@@ -67,13 +68,7 @@ const fetchWithTimeout = async (
   }
 };
 
-interface LiveRiskData {
-  safetyScore: number;
-  riskLevel: string;
-  summary: string;
-  factors: string[];
-  safetyTips: string[];
-}
+type LiveRiskData = RiskAnalysisResult;
 
 export const SafetyMap: React.FC<SafetyMapProps> = ({
   locations,
@@ -192,11 +187,13 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           if (!riskRes.ok) throw new Error(`predict-risk responded ${riskRes.status}`);
           const riskData = await riskRes.json();
 
+          const normalizedRiskData = normalizeRiskAnalysisResponse(riskData);
+
           if (
-            typeof riskData.safetyScore === 'number' &&
-            typeof riskData.riskLevel === 'string'
+            typeof normalizedRiskData.safetyScore === 'number' &&
+            typeof normalizedRiskData.riskLevel === 'string'
           ) {
-            setLiveScoreData(riskData);
+            setLiveScoreData(normalizedRiskData);
             setLiveScoreStatus('live');
           } else {
             throw new Error('predict-risk returned an unexpected shape');
@@ -221,13 +218,7 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
     liveScoreStatus === 'live' && liveScoreData ? liveScoreData.riskLevel : 'Safe zone';
 
   const [isAnalyzingAi, setIsAnalyzingAi] = useState(false);
-  const [aiAnalysisResult, setAiAnalysisResult] = useState<{
-    safetyScore: number;
-    riskLevel: string;
-    summary: string;
-    factors: string[];
-    safetyTips: string[];
-  } | null>(null);
+  const [aiAnalysisResult, setAiAnalysisResult] = useState<RiskAnalysisResult | null>(null);
 
   // Builds a fallback analysis from the location's OWN real fields
   // (lighting, CCTV %, police distance, FIR count, crowd density) instead
@@ -275,6 +266,22 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
               'Stay on well-lit main roads instead of side alleys.',
               'Share your live location with a trusted contact before entering this zone.',
             ],
+      reportSections: {
+        overview: `${loc.name} has a ${loc.riskLevel.toLowerCase()} profile based on recorded infrastructure, incident history, and visibility.`,
+        keyFindings: [
+          { title: 'Lighting', detail: lightingDesc, severity: loc.lightingStars >= 4 ? 'Low' : 'Medium' },
+          { title: 'Surveillance', detail: cctvDesc, severity: loc.cctvPercent >= 80 ? 'Low' : 'Medium' },
+          { title: 'Response access', detail: policeDesc, severity: loc.policeDistanceMeters <= 300 ? 'Low' : 'Medium' },
+        ],
+        recommendedActions:
+          loc.safetyScore >= 70
+            ? ['Keep using the main route and remain aware of surrounding foot traffic.', 'Use the nearest safe resource if the area becomes crowded or unfamiliar.']
+            : ['Prefer a main road or highly visible transit path.', 'Share your live location before entering and keep your emergency contacts updated.'],
+        watchPoints:
+          loc.safetyScore >= 70
+            ? ['Stay alert around corners, service lanes, and side streets after dark.', 'If you feel uncertain, switch to a busier and better-lit route.']
+            : ['Avoid isolated shortcuts and unfamiliar side streets.', 'If you feel unsafe, trigger GuardIA SOS and call for help immediately.'],
+      },
     };
   };
 
@@ -299,17 +306,18 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
       }
 
       const data = await response.json();
+      const normalizedResult = normalizeRiskAnalysisResponse(data);
 
       // Validate shape before trusting it — a malformed or empty response
       // shouldn't render as if it were a real AI analysis.
-      if (typeof data.safetyScore !== 'number' || typeof data.summary !== 'string' || !data.summary.trim()) {
+      if (typeof normalizedResult.safetyScore !== 'number' || typeof normalizedResult.summary !== 'string' || !normalizedResult.summary.trim()) {
         throw new Error('predict-risk returned an unexpected shape');
       }
 
-      setAiAnalysisResult(data);
+      setAiAnalysisResult(normalizedResult);
     } catch (err) {
       console.error('Live AI risk analysis failed, using location-aware fallback', err);
-      setAiAnalysisResult(buildLocationAwareFallback(loc));
+      setAiAnalysisResult(normalizeRiskAnalysisResponse(buildLocationAwareFallback(loc)));
     } finally {
       setIsAnalyzingAi(false);
     }
@@ -858,12 +866,52 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           </button>
 
           {aiAnalysisResult && (
-            <div className="bg-[#FFF0F3] border border-[#EFE6E1] rounded-[22px] p-4 space-y-2 text-xs text-[#221F20]">
+            <div className="bg-[#FFF0F3] border border-[#EFE6E1] rounded-[22px] p-4 space-y-3 text-sm text-[#221F20]">
               <div className="font-semibold text-[#A7194B] flex items-center gap-1.5">
                 <Sparkles className="w-4 h-4" />
-                AI Analysis Evaluation
+                Structured Risk Report
               </div>
-              <p className="text-[#6E676A] leading-relaxed">{aiAnalysisResult.summary}</p>
+
+              <div className="rounded-[18px] border border-[#F4DDE3] bg-white/80 p-3 space-y-1.5">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-[#6E676A]">Executive summary</div>
+                <p className="text-[#221F20] leading-relaxed">{aiAnalysisResult.reportSections.overview}</p>
+              </div>
+
+              <div className="grid gap-2.5">
+                <div className="rounded-[16px] border border-[#F4DDE3] bg-white/70 p-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-[#6E676A] mb-2">Key findings</div>
+                  <ul className="space-y-1.5">
+                    {aiAnalysisResult.reportSections.keyFindings.map((finding, index) => (
+                      <li key={`${finding.title}-${index}`} className="text-xs text-[#221F20] leading-relaxed">
+                        <span className="font-semibold">{finding.title}</span> · {finding.detail}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="rounded-[16px] border border-[#F4DDE3] bg-white/70 p-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-[#6E676A] mb-2">Recommended actions</div>
+                  <ul className="space-y-1.5">
+                    {aiAnalysisResult.reportSections.recommendedActions.map((action, index) => (
+                      <li key={`${action}-${index}`} className="text-xs text-[#221F20] leading-relaxed">• {action}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="rounded-[16px] border border-[#F4DDE3] bg-white/70 p-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-[#6E676A] mb-2">Watch points</div>
+                  <ul className="space-y-1.5">
+                    {aiAnalysisResult.reportSections.watchPoints.map((point, index) => (
+                      <li key={`${point}-${index}`} className="text-xs text-[#221F20] leading-relaxed">• {point}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+
+              <div className="text-[11px] text-[#6E676A]">
+                <span className="font-semibold text-[#221F20]">Score:</span> {aiAnalysisResult.safetyScore}/100 ·
+                <span className="font-semibold text-[#221F20] ml-2">Risk level:</span> {aiAnalysisResult.riskLevel}
+              </div>
             </div>
           )}
 

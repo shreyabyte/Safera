@@ -124,3 +124,32 @@ export interface FakeCallConfig {
   voiceScript: string;
   langCode: string; 
 }
+
+// ---- Account / Auth ----
+
+export interface UserProfile {
+  id: string;
+  name: string;
+  age: number;
+  email: string;
+  phone: string;
+  gender?: 'Female' | 'Male' | 'Non-binary' | 'Prefer not to say';
+  city: string;
+  bloodGroup?: string;
+  locationAccessGranted: boolean;
+  lastKnownLocation?: { lat: number; lng: number } | null;
+  emergencyContacts: EmergencyContact[];
+  createdAt: string;
+  isDemo?: boolean;
+}
+
+// Shape stored in localStorage per registered account.
+// NOTE: this is a client-only demo auth system (no backend), so the
+// password is only lightly hashed (SHA-256) purely to avoid storing it in
+// plaintext in localStorage. It is NOT secure enough for a real production
+// login — swap this out for a real backend + proper auth (e.g. bcrypt on
+// the server, or a provider like Firebase/Auth0) before going live.
+export interface StoredAccount {
+  profile: UserProfile;
+  passwordHash: string;
+}

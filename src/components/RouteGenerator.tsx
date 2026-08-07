@@ -162,6 +162,8 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
               safetyScore: assessment.pathSafetyScore,
               lightingPercent: assessment.lightingPercent,
               accessibilityScore: assessment.accessibilityPercent,
+              cctvCoverage: assessment.cctvPercent,
+              policeBoothNearby: assessment.policeBoothNearby,
               highlights: [
                 `${assessment.cctvPercent}% average CCTV coverage along this path`,
                 assessment.policeBoothNearby
