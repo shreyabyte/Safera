@@ -41,44 +41,120 @@ app.get('/api/health', (req, res) => {
 // API Route 1: Risk Assessment Prediction
 app.post('/api/ai/predict-risk', async (req, res) => {
   try {
-    const { locationName, timeOfDay, weather, crowdDensity, firCount, recentReports } = req.body;
+    const {
+      locationName,
+      area,
+      timeOfDay,
+      weather,
+      crowdDensity,
+      firCount,
+      recentReports,
+      // Real fields that were previously never sent to the AI at all —
+      // without these, Gemini was reasoning with almost no actual context.
+      lightingStars,
+      cctvPercent,
+      policeDistanceMeters,
+      seedSafetyScore,
+      // 'osm-live' locations are real places pulled from OpenStreetMap
+      // (see src/utils/overpass.ts) with no crime-history data available —
+      // the prompt below must not let the model invent FIR/CCTV numbers
+      // for these, only reason from real distance/type/time/weather.
+      dataSource,
+      placeType,
+    } = req.body;
+
     const ai = getGeminiClient();
+    const isLiveOsmPlace = dataSource === 'osm-live';
 
     if (!ai) {
-      // Fallback structured response if key is missing or env unconfigured
+      // No GEMINI_API_KEY configured — structured, locally-computed fallback
+      // that still fills out a full report shape (not just a flat summary),
+      // so the UI never renders an obviously thinner result depending on
+      // whether the key happens to be set.
+      const fallbackScore = isLiveOsmPlace
+        ? Math.max(40, Number(seedSafetyScore) || 65)
+        : Math.max(35, 90 - (firCount || 0) * 8 - (timeOfDay === 'Night' || timeOfDay === 'Late Night' ? 20 : 0));
+      const fallbackRisk = fallbackScore >= 75 ? 'Safe' : fallbackScore >= 55 ? 'Moderate Caution' : 'Extreme Caution';
+
       return res.json({
-        safetyScore: Math.max(35, 90 - (firCount || 0) * 8 - (timeOfDay === 'Night' ? 20 : 0)),
-        riskLevel: (firCount > 3 || timeOfDay === 'Late Night') ? 'High Risk' : 'Moderate Caution',
-        summary: `Analysis for ${locationName || 'Selected Area'}: Based on local crowd density (${crowdDensity || 'Moderate'}) and time (${timeOfDay || 'Current'}).`,
-        factors: [
-          `Lighting Quality: ${timeOfDay === 'Night' ? 'Limited in side lanes' : 'Good visibility'}`,
-          `CCTV & Police Presence: ${firCount > 2 ? 'Active monitoring recommended' : 'Regular police patrol area'}`,
-          `Crowd & Traffic: ${crowdDensity || 'Moderate'} pedestrian traffic`
-        ],
+        safetyScore: fallbackScore,
+        riskLevel: fallbackRisk,
+        summary: `Analysis for ${locationName || 'Selected Area'}: computed from local data (${crowdDensity || 'Moderate'} crowd density, ${timeOfDay || 'current'} conditions). Live AI analysis is unavailable right now.`,
+        factors: isLiveOsmPlace
+          ? [`Real distance to nearest police: ${policeDistanceMeters ?? 'unknown'}m`, `Place type: ${placeType || 'unknown'}`, `Crime/CCTV history: not publicly available for this real location`]
+          : [
+              `Lighting Quality: ${timeOfDay === 'Night' || timeOfDay === 'Late Night' ? 'Limited in side lanes' : 'Good visibility'}`,
+              `CCTV & Police Presence: ${firCount > 2 ? 'Active monitoring recommended' : 'Regular police patrol area'}`,
+              `Crowd & Traffic: ${crowdDensity || 'Moderate'} pedestrian traffic`,
+            ],
         safetyTips: [
           'Stick to main well-lit thoroughfares.',
-          'Keep your live GPS tracking active in GuardIA SOS mode.',
-          'Identify nearby safe hubs (24/7 pharmacies, police booths).'
-        ]
+          'Keep your live GPS tracking active in Safera SOS mode.',
+          'Identify nearby safe hubs (24/7 pharmacies, police booths).',
+        ],
+        reportSections: {
+          overview: `${locationName || 'This location'} is rated "${fallbackRisk}" based on ${isLiveOsmPlace ? 'real proximity to mapped emergency infrastructure' : 'logged incident and infrastructure data'}. Live AI analysis is temporarily unavailable, so this report is generated directly from known data rather than model reasoning.`,
+          keyFindings: isLiveOsmPlace
+            ? [
+                { title: 'Real place type', detail: `This is a mapped ${placeType || 'location'} on OpenStreetMap.`, severity: 'Low' },
+                { title: 'Nearest police', detail: `${policeDistanceMeters ?? 'Unknown'}m away.`, severity: policeDistanceMeters && policeDistanceMeters > 700 ? 'Medium' : 'Low' },
+                { title: 'Crime history', detail: 'Not available from public map data for this real-world location.', severity: 'Medium' },
+              ]
+            : [
+                { title: 'Lighting', detail: `${lightingStars ?? '—'}/5 star rating on record.`, severity: (lightingStars ?? 3) >= 4 ? 'Low' : 'Medium' },
+                { title: 'CCTV Coverage', detail: `${cctvPercent ?? '—'}% coverage on record.`, severity: (cctvPercent ?? 50) >= 70 ? 'Low' : 'Medium' },
+                { title: 'Incident History', detail: `${firCount ?? 0} FIR(s) logged for this area.`, severity: (firCount ?? 0) > 2 ? 'High' : 'Low' },
+              ],
+          recommendedActions: [
+            'Stick to main well-lit thoroughfares.',
+            'Keep your live GPS tracking active in Safera SOS mode.',
+            'Identify nearby safe hubs before proceeding.',
+          ],
+          watchPoints: [
+            timeOfDay === 'Night' || timeOfDay === 'Late Night'
+              ? 'Visibility and foot traffic drop significantly after dark — reassess if the area feels unfamiliar.'
+              : 'Conditions can change quickly if crowd density drops later in the day.',
+            'If anything feels wrong, trigger Safera SOS and share your live location immediately.',
+          ],
+        },
       });
     }
 
-    const prompt = `Analyze personal safety risk for location: "${locationName || 'Urban Corridor'}".
-    Context details:
-    - Time of day: ${timeOfDay || 'Evening'}
-    - Weather: ${weather || 'Clear'}
-    - Crowd Density: ${crowdDensity || 'Moderate'}
-    - Local Incident/FIR Count: ${firCount || 1}
-    - Recent Community Reports: ${JSON.stringify(recentReports || ['Reported poor street lighting', 'Occasional late night harassment'])}
+    const contextBlock = isLiveOsmPlace
+      ? `This is a REAL location fetched live from OpenStreetMap (not a seeded demo entry). It is a "${placeType || 'unknown type'}" located ${policeDistanceMeters ?? 'an unknown distance'}m from the nearest mapped police station.
+      IMPORTANT: No crime history, FIR records, or CCTV coverage data exists for this location from any public source. Do NOT invent or estimate these numbers. Reason only from: real place type, real distance to police, time of day, weather, and any community reports provided below. Your keyFindings and overview must be honest that detailed incident-history data isn't available here.`
+      : `Local Incident/FIR Count: ${firCount ?? 1}
+      Lighting Rating: ${lightingStars ?? 'unknown'}/5 stars
+      CCTV Coverage: ${cctvPercent ?? 'unknown'}%
+      Nearest Police Distance: ${policeDistanceMeters ?? 'unknown'}m
+      Baseline Safety Score on Record: ${seedSafetyScore ?? 'unknown'}/100`;
 
-    Return a clean JSON object ONLY with the following key structure:
-    {
-      "safetyScore": <number 0 to 100, where 100 is safest>,
-      "riskLevel": "<Safe | Moderate Caution | High Risk | Extreme Caution>",
-      "summary": "<1-2 sentence executive summary of risk>",
-      "factors": ["<factor 1>", "<factor 2>", "<factor 3>"],
-      "safetyTips": ["<tip 1>", "<tip 2>", "<tip 3>"]
-    }`;
+    const prompt = `You are a personal safety analyst producing a genuine, specific risk report for a woman navigating this location alone. Do not write generic filler — every finding must reference the actual details given below.
+
+Location: "${locationName || 'Urban Corridor'}"${area ? `, ${area}` : ''}
+Time of day: ${timeOfDay || 'Evening'}
+Weather: ${weather || 'Clear'}
+Crowd Density: ${crowdDensity || 'Moderate'}
+${contextBlock}
+Recent Community Reports: ${JSON.stringify(recentReports && recentReports.length > 0 ? recentReports : ['No recent community reports for this location.'])}
+
+Produce a full structured report as JSON ONLY (no markdown, no prose outside the JSON) matching exactly this shape:
+{
+  "safetyScore": <number 0-100, 100 = safest>,
+  "riskLevel": "<Safe | Moderate Caution | High Risk | Extreme Caution>",
+  "summary": "<1-2 sentence executive summary>",
+  "factors": ["<factor 1>", "<factor 2>", "<factor 3>"],
+  "safetyTips": ["<tip 1>", "<tip 2>", "<tip 3>"],
+  "reportSections": {
+    "overview": "<3-4 sentence honest, specific overview referencing the actual time/weather/crowd/lighting/distance context given above — not generic boilerplate>",
+    "keyFindings": [
+      { "title": "<short label, e.g. 'Lighting', 'Police Proximity', 'Time-of-Day Risk'>", "detail": "<1-2 sentences, specific to the real numbers/context given>", "severity": "<Low | Medium | High>" }
+      // produce 4 to 6 distinct findings, each covering a different real signal from the context above (lighting OR real distance, crowd, time, weather, community reports, incident history if available) — do not repeat the same signal twice, do not label them "Signal 1/2/3"
+    ],
+    "recommendedActions": ["<3 to 5 concrete, specific actions someone could actually take right now — not generic 'stay alert' filler unless paired with something specific>"],
+    "watchPoints": ["<2 to 4 specific things to stay alert for, grounded in the actual context — e.g. a specific time window, a specific nearby feature, a specific report>"]
+  }
+}`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.6-flash',
