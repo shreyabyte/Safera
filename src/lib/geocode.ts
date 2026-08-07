@@ -5,6 +5,7 @@ export interface GeocodedPlace {
 }
 
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
+const NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
 
 export async function geocodePlace(
   query: string,
@@ -34,6 +35,7 @@ export async function geocodePlace(
     displayName: best.display_name,
   };
 }
+
 /**
  * Returns multiple candidate matches for autocomplete-style suggestions.
  */
@@ -59,4 +61,24 @@ export async function searchPlaces(query: string, limit = 5): Promise<GeocodedPl
     lng: parseFloat(d.lon),
     displayName: d.display_name,
   }));
+}
+
+/**
+ * Reverse geocode: convert coordinates into a human-readable place name.
+ */
+export async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
+  const params = new URLSearchParams({
+    lat: String(lat),
+    lon: String(lng),
+    format: 'json',
+  });
+
+  const res = await fetch(`${NOMINATIM_REVERSE_URL}?${params.toString()}`, {
+    headers: { 'Accept-Language': 'en' },
+  });
+
+  if (!res.ok) return null;
+
+  const data = await res.json();
+  return data?.display_name ?? null;
 }
