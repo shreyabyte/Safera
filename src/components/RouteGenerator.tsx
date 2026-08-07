@@ -49,7 +49,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
   const [timeOfDay, setTimeOfDay] = useState<"Day" | "Evening" | "Late Night">(
     "Late Night",
   );
-  const [transportMode, setTransportMode] = useState
+  const [transportMode, setTransportMode] = useState<
     "Walking" | "Wheelchair / Assistive" | "Solo Transit"
   >("Walking");
   const [accessibilityNeeds, setAccessibilityNeeds] = useState(
@@ -67,17 +67,9 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
   const [routeSteps, setRouteSteps] = useState<RouteStep[]>([]);
   const [mapError, setMapError] = useState<string | null>(null);
 
-  // Whether the initial geolocation attempt (success or fallback) has
-  // resolved yet. The auto-routing effect waits on this so it doesn't fire
-  // with a stale/empty origin before we know where the user actually is.
   const [originReady, setOriginReady] = useState(false);
-  // Guards the auto-routing effect against re-firing for the same target
-  // (e.g. on unrelated re-renders) once it has already been routed.
   const lastAutoRoutedTargetId = useRef<string | null>(null);
 
-  // Core route-generation pipeline, shared by the manual "Re-calculate"
-  // button and by the auto-run effect that fires when a target location is
-  // selected via "Route there" elsewhere in the app.
   const runRouteGeneration = async (
     originPlace: GeocodedPlace,
     destinationPlace: GeocodedPlace,
@@ -96,7 +88,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       const primaryRoute = realRoutes[0];
       setRoutePath(primaryRoute.coordinates);
       setRouteSteps(primaryRoute.steps);
-      // Be honest about how many real distinct paths OSRM actually found.
       console.log(
         `OSRM found ${realRoutes.length} distinct route(s) for this trip.`,
       );
@@ -114,9 +105,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       });
       const data = await res.json();
 
-      // Maps this screen's local time-of-day options onto the risk grid's
-      // own TimeOfDay type so the route scorer and the Live Safety Grid on
-      // the Map tab always agree on what "Night" means.
       const gridTimeOfDay: GridTimeOfDay =
         timeOfDay === "Evening"
           ? "Dusk"
@@ -126,21 +114,11 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           ? "Day"
           : "Night";
 
-      // Score every real OSRM path against actual location + report data —
-      // same idea as danger-index safe-routing research (score path
-      // segments against real incident data instead of trusting an AI
-      // guess), computed here via the same kernel model as the Live Safety
-      // Grid. This numeric score and these risk segments are now grounded
-      // in real geodata regardless of whether the AI call above succeeds.
       const assessedRoutes = realRoutes.map((r) =>
         scoreRoutePath(r.coordinates, locations, reports, gridTimeOfDay),
       );
 
       if (data.routes && Array.isArray(data.routes) && data.routes.length > 0) {
-        // Only keep as many cards as we have REAL distinct paths for.
-        // If OSRM only found 1 real path, show only 1 card — with the
-        // top (safest-framed) scoring — rather than faking 3 identical
-        // "alternatives."
         const usableCount = Math.min(data.routes.length, realRoutes.length);
         const updatedRoutes: RouteOption[] = data.routes
           .slice(0, usableCount)
@@ -150,10 +128,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
               ...r,
               distance: formatDistance(realRoutes[idx].distanceMeters),
               estimatedTime: formatDuration(realRoutes[idx].durationSeconds),
-              // Real numbers override the AI's guessed ones — the AI's text
-              // (name, tag, highlights) is still useful descriptive color,
-              // but the score and warnings people actually rely on now come
-              // from real distance-to-known-risk math.
               safetyScore: assessment.pathSafetyScore,
               lightingPercent: assessment.lightingPercent,
               accessibilityScore: assessment.accessibilityPercent,
@@ -173,10 +147,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           );
         }
       } else if (realRoutes.length > 0) {
-        // AI text unavailable (no API key, quota, network) — build route
-        // cards entirely from real OSRM geometry + the computed risk
-        // scores above, so the feature still works with zero AI dependency
-        // instead of failing silently.
         const synthesizedRoutes: RouteOption[] = realRoutes
           .map((r, idx) => {
             const assessment = assessedRoutes[idx];
@@ -257,7 +227,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       (pos) => {
         const { latitude, longitude } = pos.coords;
 
-        // Show something immediately, even before reverse-geocoding resolves.
         setOrigin(`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
         setOriginCoords({
           lat: latitude,
@@ -265,7 +234,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           displayName: "Current Location",
         });
 
-        // Then try to upgrade it to a readable address.
         fetch(
           `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`,
         )
@@ -282,7 +250,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           })
           .catch((err) => {
             console.error("Reverse geocode failed:", err);
-            // Not fatal — raw coordinates are already set above.
           });
       },
       (err) => {
@@ -297,7 +264,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
     );
   };
 
-  // --- Resolve a starting origin once on mount ---
   useEffect(() => {
     if (!navigator.geolocation) {
       setOrigin("Connaught Place, New Delhi, India");
@@ -321,7 +287,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
             }
           })
           .catch(() => {
-            // Reverse geocode failed — raw coordinates from above are still fine.
           });
       },
       (err) => {
@@ -334,11 +299,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // --- Auto-run everything the moment a target is selected via "Route there" ---
-  // Runs whenever selectedLocationTarget changes (not just on first mount),
-  // waits for the origin to be ready, and calls the exact same pipeline the
-  // manual button uses — so distance, ETA, safety scoring, and turn-by-turn
-  // steps all populate automatically with zero extra clicks.
   useEffect(() => {
     if (!selectedLocationTarget || !originReady) return;
     if (lastAutoRoutedTargetId.current === selectedLocationTarget.id) return;
@@ -346,9 +306,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
 
     setDestination(selectedLocationTarget.name);
 
-    // SafetyLocation already carries real lat/lng — no need to geocode the
-    // destination text at all, which also sidesteps Nominatim occasionally
-    // failing to resolve a location's display name.
     const destinationPlace: GeocodedPlace = {
       lat: selectedLocationTarget.lat,
       lng: selectedLocationTarget.lng,
@@ -375,7 +332,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Route Generator Control Card */}
       <div className="bg-white border border-[#EFE6E1] rounded-[24px] p-6 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#EFE6E1] pb-4">
           <div>
@@ -402,7 +358,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           </button>
         </div>
 
-        {/* Origin & Destination Inputs */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
           <div>
             <label className="block text-[#6E676A] mb-1.5 font-medium">
@@ -473,7 +428,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           </div>
         </div>
 
-        {/* Quick Destination Presets */}
         <div className="flex items-center space-x-2 text-xs pt-1 overflow-x-auto no-scrollbar">
           <span className="text-[#6E676A] font-medium whitespace-nowrap">
             Quick Target:
@@ -519,7 +473,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           />
         </div>
       )}
-      {/* Generated Route Options Cards Grid */}
       {routes.length === 0 ? (
         <div className="bg-white border border-dashed border-[#EFE6E1] rounded-[24px] p-10 text-center space-y-2">
           <Navigation className="w-6 h-6 text-[#A70F43] mx-auto" />
@@ -578,7 +531,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
                     </span>
                   </div>
 
-                  {/* Progress Indicators */}
                   <div className="space-y-2.5 text-xs">
                     <div>
                       <div className="flex justify-between text-[11px] text-[#6E676A] mb-1">
@@ -611,7 +563,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
                     </div>
                   </div>
 
-                  {/* Highlights List */}
                   <div className="mt-4 space-y-1.5 text-xs text-[#221F20]">
                     <span className="text-[11px] font-semibold text-[#6E676A]">
                       Safety Features:
@@ -627,7 +578,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
                     ))}
                   </div>
 
-                  {/* Risk Segments Warnings */}
                   {route.riskSegments && route.riskSegments.length > 0 && (
                     <div className="mt-4 p-3 rounded-[16px] bg-amber-50/80 border border-amber-200 space-y-1 text-xs">
                       <span className="font-semibold text-amber-800 flex items-center gap-1 text-[11px]">
@@ -652,3 +602,18 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
                     isSelected
                       ? "bg-[#A70F43] hover:bg-[#8D0D39] text-white shadow-xs"
                       : "bg-[#FEFCFA] hover:bg-[#FFF0F3] text-[#221F20] border border-[#EFE6E1]"
+                  }`}
+                >
+                  <span>
+                    {isSelected ? "Navigating..." : "Start Navigation"}
+                  </span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
