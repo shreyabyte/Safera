@@ -264,18 +264,7 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({ evidenceList, reco
                     </span>
 
                     <button
-                      onClick={() => {
-                        if (!item.mediaUrl) {
-                          alert(`No captured media file for "${item.title}" — this entry has metadata only (camera/mic access wasn't available when it was recorded).`);
-                          return;
-                        }
-                        const a = document.createElement('a');
-                        a.href = item.mediaUrl;
-                        a.download = item.title;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                      }}
+                      onClick={() => alert(`Exporting encrypted dossier for file ${item.title}...`)}
                       className="text-[#A70F43] hover:text-[#8D0D39] font-bold flex items-center gap-1"
                     >
                       <Download className="w-3 h-3" />
