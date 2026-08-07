@@ -33,7 +33,7 @@ import {
   riskBandColor,
   type SafetyGridCell,
 } from '../utils/hotspot';
-import { normalizeRiskAnalysisResponse, type RiskAnalysisResult } from '../lib/riskAnalysis';
+import { fetchNearbyPlaces, placesToSafetyLocations } from '../utils/overpass';
 
 interface SafetyMapProps {
   locations: SafetyLocation[];
@@ -68,7 +68,13 @@ const fetchWithTimeout = async (
   }
 };
 
-type LiveRiskData = RiskAnalysisResult;
+interface LiveRiskData {
+  safetyScore: number;
+  riskLevel: string;
+  summary: string;
+  factors: string[];
+  safetyTips: string[];
+}
 
 export const SafetyMap: React.FC<SafetyMapProps> = ({
   locations,
@@ -82,6 +88,29 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showAccessibilityOverlay, setShowAccessibilityOverlay] = useState(false);
   const [showPoliceBoothsOnly] = useState(false);
+
+  // --- Real nearby locations (replaces mock INITIAL_LOCATIONS for the grid) ---
+  // Fetched from OpenStreetMap/Overpass once we have the user's real GPS
+  // position (see the geolocation effect below). `locations` (the mock
+  // prop) is now used ONLY as an emergency fallback if the live fetch
+  // fails entirely — clearly labeled as such in the UI, never silently
+  // swapped in.
+  const [liveLocations, setLiveLocations] = useState<SafetyLocation[] | null>(null);
+  const [liveLocationsStatus, setLiveLocationsStatus] = useState<
+    'loading' | 'live' | 'empty' | 'network-blocked' | 'no-gps'
+  >('loading');
+
+  // What the rest of this component actually renders from. Falls back to
+  // the seed `locations` prop only when the live fetch has definitively
+  // failed or returned nothing — while loading, this stays empty rather
+  // than silently showing fake Delhi coordinates as if they were real.
+  const activeLocations: SafetyLocation[] = useMemo(() => {
+    if (liveLocations && liveLocations.length > 0) return liveLocations;
+    if (liveLocationsStatus === 'network-blocked' || liveLocationsStatus === 'empty' || liveLocationsStatus === 'no-gps') {
+      return locations; // seed fallback, only after live has genuinely failed
+    }
+    return []; // still loading — don't show anything yet
+  }, [liveLocations, liveLocationsStatus, locations]);
 
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
 
@@ -109,6 +138,7 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
       setLiveLocationLabel('Location unavailable');
       setLiveWeatherDesc('Unavailable');
       setLiveScoreStatus('denied');
+      setLiveLocationsStatus('no-gps');
       return;
     }
 
@@ -117,6 +147,40 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
         const { latitude, longitude } = pos.coords;
         setUserCoords({ lat: latitude, lng: longitude });
         let weatherDescLocal = 'Clear';
+
+        // Kick off the real nearby-places fetch as soon as we have a real
+        // GPS fix — runs independently of the weather/reverse-geocode
+        // calls below so a slow one doesn't block the others. Hard-capped
+        // at 25s total (on top of fetchNearbyPlaces' own internal 20s/mirror
+        // timeouts) so the UI can NEVER get stuck on "Finding real police
+        // stations..." forever — it always resolves to the mock fallback
+        // within a bounded time if something unexpected happens.
+        let nearbyPlacesTimedOut = false;
+        const nearbyPlacesTimer = setTimeout(() => {
+          nearbyPlacesTimedOut = true;
+          console.warn('Nearby places fetch exceeded 25s hard timeout — falling back to demo locations');
+          setLiveLocationsStatus('network-blocked');
+        }, 25000);
+
+        fetchNearbyPlaces(latitude, longitude, 5000)
+          .then((result) => {
+            if (nearbyPlacesTimedOut) return; // already fell back — don't flip state late
+            clearTimeout(nearbyPlacesTimer);
+            if (result.status === 'live' && result.places.length > 0) {
+              setLiveLocations(placesToSafetyLocations(result.places, latitude, longitude));
+              setLiveLocationsStatus('live');
+            } else if (result.status === 'empty') {
+              setLiveLocationsStatus('empty');
+            } else {
+              setLiveLocationsStatus('network-blocked');
+            }
+          })
+          .catch((err) => {
+            if (nearbyPlacesTimedOut) return;
+            clearTimeout(nearbyPlacesTimer);
+            console.error('Nearby places fetch failed', err);
+            setLiveLocationsStatus('network-blocked');
+          });
 
         try {
           const weatherRes = await fetchWithTimeout(
@@ -187,13 +251,11 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           if (!riskRes.ok) throw new Error(`predict-risk responded ${riskRes.status}`);
           const riskData = await riskRes.json();
 
-          const normalizedRiskData = normalizeRiskAnalysisResponse(riskData);
-
           if (
-            typeof normalizedRiskData.safetyScore === 'number' &&
-            typeof normalizedRiskData.riskLevel === 'string'
+            typeof riskData.safetyScore === 'number' &&
+            typeof riskData.riskLevel === 'string'
           ) {
-            setLiveScoreData(normalizedRiskData);
+            setLiveScoreData(riskData);
             setLiveScoreStatus('live');
           } else {
             throw new Error('predict-risk returned an unexpected shape');
@@ -208,6 +270,7 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
         setLiveLocationLabel('Location permission denied');
         setLiveWeatherDesc('Enable location for live weather');
         setLiveScoreStatus('denied');
+        setLiveLocationsStatus('no-gps');
       },
     );
   }, []);
@@ -218,7 +281,13 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
     liveScoreStatus === 'live' && liveScoreData ? liveScoreData.riskLevel : 'Safe zone';
 
   const [isAnalyzingAi, setIsAnalyzingAi] = useState(false);
-  const [aiAnalysisResult, setAiAnalysisResult] = useState<RiskAnalysisResult | null>(null);
+  const [aiAnalysisResult, setAiAnalysisResult] = useState<{
+    safetyScore: number;
+    riskLevel: string;
+    summary: string;
+    factors: string[];
+    safetyTips: string[];
+  } | null>(null);
 
   // Builds a fallback analysis from the location's OWN real fields
   // (lighting, CCTV %, police distance, FIR count, crowd density) instead
@@ -226,6 +295,23 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
   // so even a failed request never claims something untrue about the
   // specific location — e.g. it won't call a 1-star-lit alley "well-lit."
   const buildLocationAwareFallback = (loc: SafetyLocation) => {
+    // For real OSM-sourced locations, lighting/CCTV are honestly unknown
+    // (see utils/overpass.ts) — describe them as such instead of implying
+    // a measured "poor coverage" finding that was never actually taken.
+    if (loc.dataSource === 'osm-live') {
+      return {
+        safetyScore: loc.safetyScore,
+        riskLevel: loc.riskLevel,
+        summary: `${loc.name} is a real ${loc.placeType?.replace('_', ' ')} located ${loc.policeDistanceMeters}m from your position. Its score reflects proximity to real emergency infrastructure only — lighting and CCTV coverage aren't available from public map data for this location. (Live AI analysis is temporarily unavailable.)`,
+        factors: [
+          `Type: ${loc.placeType?.replace('_', ' ')}`,
+          `Distance: ${loc.policeDistanceMeters}m away`,
+          'Lighting/CCTV: Not available from public data',
+        ],
+        safetyTips: ['Real-time crowd and lighting conditions may vary — use your own judgment on arrival.'],
+      };
+    }
+
     const lightingDesc =
       loc.lightingStars >= 4
         ? 'well-lit with strong streetlight coverage'
@@ -266,22 +352,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
               'Stay on well-lit main roads instead of side alleys.',
               'Share your live location with a trusted contact before entering this zone.',
             ],
-      reportSections: {
-        overview: `${loc.name} has a ${loc.riskLevel.toLowerCase()} profile based on recorded infrastructure, incident history, and visibility.`,
-        keyFindings: [
-          { title: 'Lighting', detail: lightingDesc, severity: loc.lightingStars >= 4 ? 'Low' : 'Medium' },
-          { title: 'Surveillance', detail: cctvDesc, severity: loc.cctvPercent >= 80 ? 'Low' : 'Medium' },
-          { title: 'Response access', detail: policeDesc, severity: loc.policeDistanceMeters <= 300 ? 'Low' : 'Medium' },
-        ],
-        recommendedActions:
-          loc.safetyScore >= 70
-            ? ['Keep using the main route and remain aware of surrounding foot traffic.', 'Use the nearest safe resource if the area becomes crowded or unfamiliar.']
-            : ['Prefer a main road or highly visible transit path.', 'Share your live location before entering and keep your emergency contacts updated.'],
-        watchPoints:
-          loc.safetyScore >= 70
-            ? ['Stay alert around corners, service lanes, and side streets after dark.', 'If you feel uncertain, switch to a busier and better-lit route.']
-            : ['Avoid isolated shortcuts and unfamiliar side streets.', 'If you feel unsafe, trigger GuardIA SOS and call for help immediately.'],
-      },
     };
   };
 
@@ -293,11 +363,19 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           locationName: loc.name,
+          area: loc.area,
           timeOfDay,
-          weather: 'Clear Night (24 deg C)',
+          weather: `${liveWeatherDesc} ${liveTemp}`,
           crowdDensity: loc.crowdDensity,
           firCount: loc.firCount,
           recentReports: reports.filter((r) => r.locationName.includes(loc.name.split(' ')[0])).map((r) => r.description),
+          // Real fields Gemini needs to reason with instead of near-empty context.
+          lightingStars: loc.lightingStars,
+          cctvPercent: loc.cctvPercent,
+          policeDistanceMeters: loc.policeDistanceMeters,
+          seedSafetyScore: loc.safetyScore,
+          dataSource: loc.dataSource,
+          placeType: loc.placeType,
         }),
       });
 
@@ -306,26 +384,35 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
       }
 
       const data = await response.json();
-      const normalizedResult = normalizeRiskAnalysisResponse(data);
 
       // Validate shape before trusting it — a malformed or empty response
       // shouldn't render as if it were a real AI analysis.
-      if (typeof normalizedResult.safetyScore !== 'number' || typeof normalizedResult.summary !== 'string' || !normalizedResult.summary.trim()) {
+      if (typeof data.safetyScore !== 'number' || typeof data.summary !== 'string' || !data.summary.trim()) {
         throw new Error('predict-risk returned an unexpected shape');
       }
 
-      setAiAnalysisResult(normalizedResult);
+      setAiAnalysisResult(data);
     } catch (err) {
       console.error('Live AI risk analysis failed, using location-aware fallback', err);
-      setAiAnalysisResult(normalizeRiskAnalysisResponse(buildLocationAwareFallback(loc)));
+      setAiAnalysisResult(buildLocationAwareFallback(loc));
     } finally {
       setIsAnalyzingAi(false);
     }
   };
 
+  // Once real (or fallback) locations are ready, make sure the selected
+  // card actually points at one of them instead of staying pinned to the
+  // very first mock location the component happened to mount with.
+  useEffect(() => {
+    if (activeLocations.length === 0) return;
+    setSelectedLocation((prev) =>
+      activeLocations.some((l) => l.id === prev.id) ? prev : activeLocations[0]
+    );
+  }, [activeLocations]);
+
   const [isLiveLocationModalOpen, setIsLiveLocationModalOpen] = useState(false);
 
-  const filteredLocations = locations.filter((loc) => {
+  const filteredLocations = activeLocations.filter((loc) => {
     if (showPoliceBoothsOnly && !loc.accessibility.policeBooths) return false;
     if (showAccessibilityOverlay && !loc.accessibility.wheelchairRamps) return false;
     return true;
@@ -335,11 +422,11 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
   // Recomputed whenever the underlying locations/reports/time-of-day change,
   // so submitting a new community report visibly reshapes the heatmap.
   const safetyGrid: SafetyGridCell[] = useMemo(
-    () => computeSafetyGrid(locations, reports, timeOfDay),
-    [locations, reports, timeOfDay]
+    () => computeSafetyGrid(activeLocations, reports, timeOfDay),
+    [activeLocations, reports, timeOfDay]
   );
 
-  const boundingBox = useMemo(() => gridToBoundingBox(locations, reports), [locations, reports]);
+  const boundingBox = useMemo(() => gridToBoundingBox(activeLocations, reports), [activeLocations, reports]);
 
   const projectedLocations = useMemo(
     () =>
@@ -357,8 +444,8 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
 
   // --- Nearest safe resource (police booth if available, else the highest-scoring nearby location) ---
   const nearestSafeResource = useMemo(
-    () => (userCoords ? findNearestSafeResource(userCoords.lat, userCoords.lng, locations) : null),
-    [userCoords, locations]
+    () => (userCoords ? findNearestSafeResource(userCoords.lat, userCoords.lng, activeLocations) : null),
+    [userCoords, activeLocations]
   );
 
   return (
@@ -472,15 +559,25 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
                 <li className="flex items-start gap-1.5">
                   <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0"></span>
                   <span>
-                    <strong>Real, computed:</strong> the Live Safety Grid below is a kernel-density risk
-                    surface recomputed from every location's incident history and every community report's
-                    category, trust score, and recency — not a fixed illustration.
+                    <strong>Real, live:</strong> the Live Safety Grid's locations are real police stations, hospitals, pharmacies, and fire stations fetched from OpenStreetMap within 5km of your actual GPS position — not preset coordinates.
                   </span>
                 </li>
                 <li className="flex items-start gap-1.5">
                   <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-[#A7194B] shrink-0"></span>
                   <span>
-                    <strong>Seed data (not yet live):</strong> historical incident/CCTV baseline is a curated demo dataset standing in for real open data - e.g. NCRB or state police open-data portals — which we'd integrate for production use.
+                    <strong>Honestly unknown, not fabricated:</strong> for these real OSM locations, FIR counts, CCTV coverage %, and community trust score aren't publicly available — we don't invent numbers for them. Their score reflects proximity to real emergency infrastructure only, which is disclosed on each card.
+                  </span>
+                </li>
+                <li className="flex items-start gap-1.5">
+                  <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0"></span>
+                  <span>
+                    <strong>Real, computed:</strong> the grid itself is a kernel-density risk surface recomputed from these live locations plus every community report's category, trust score, and recency — not a fixed illustration.
+                  </span>
+                </li>
+                <li className="flex items-start gap-1.5">
+                  <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-[#A7194B] shrink-0"></span>
+                  <span>
+                    <strong>Seed data (fallback only):</strong> if live location access or OpenStreetMap can't be reached, the grid falls back to a small bundled demo dataset — clearly labeled when this happens, never silently swapped in.
                   </span>
                 </li>
               </ul>
@@ -680,6 +777,39 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
             <span className="text-xs font-medium text-[#6E676A]">Context: {timeOfDay} Mode</span>
           </div>
 
+          {/* Honest status banner — tells the truth about whether these
+              locations are real (fetched from OSM around your actual GPS
+              position) or the bundled demo set used only when a live fetch
+              genuinely isn't possible. */}
+          {liveLocationsStatus === 'loading' && (
+            <div className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-[#FFF0F3] border border-[#EFE6E1] text-xs font-semibold text-[#A7194B]">
+              <span className="w-2 h-2 rounded-full bg-[#A7194B] animate-pulse"></span>
+              <span>Finding real police stations, hospitals & pharmacies within 5km of you...</span>
+            </div>
+          )}
+          {liveLocationsStatus === 'live' && (
+            <div className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-700">
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span>Showing {activeLocations.length} real nearby places from OpenStreetMap, live within 5km of your location.</span>
+            </div>
+          )}
+          {liveLocationsStatus === 'empty' && (
+            <div className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-amber-50 border border-amber-200 text-xs font-semibold text-amber-800">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              <span>No mapped police/hospital/pharmacy found within 5km on OpenStreetMap — showing demo locations instead.</span>
+            </div>
+          )}
+          {(liveLocationsStatus === 'network-blocked' || liveLocationsStatus === 'no-gps') && (
+            <div className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-amber-50 border border-amber-200 text-xs font-semibold text-amber-800">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              <span>
+                {liveLocationsStatus === 'no-gps'
+                  ? 'Location access needed for live nearby data — showing demo locations instead.'
+                  : 'Could not reach live map data right now — showing demo locations instead.'}
+              </span>
+            </div>
+          )}
+
           <div className="relative bg-[#FCF7F1]/40 border border-[#EFE6E1] rounded-[22px] min-h-[440px] overflow-hidden flex flex-col justify-between p-5">
             <div className="absolute inset-0 opacity-15 bg-[radial-gradient(#A7194B_1px,transparent_1px)] [background-size:18px_18px]"></div>
 
@@ -766,11 +896,19 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
 
                     <p className="text-xs text-[#6E676A]">{loc.area}</p>
 
-                    <div className="mt-3 pt-2.5 border-t border-[#EFE6E1] flex items-center justify-between text-[11px] text-[#6E676A]">
-                      <span>FIR Logs: {loc.firCount}</span>
-                      <span>CCTV: {loc.cctvPercent}%</span>
-                      <span>Trust: {loc.trustScore}%</span>
-                    </div>
+                    {loc.dataSource === 'osm-live' ? (
+                      <div className="mt-3 pt-2.5 border-t border-[#EFE6E1] flex items-center justify-between text-[11px] text-[#6E676A]">
+                        <span className="capitalize">{loc.placeType?.replace('_', ' ')}</span>
+                        <span>{loc.policeDistanceMeters}m away</span>
+                        <span className="text-emerald-600 font-semibold">Live · OSM</span>
+                      </div>
+                    ) : (
+                      <div className="mt-3 pt-2.5 border-t border-[#EFE6E1] flex items-center justify-between text-[11px] text-[#6E676A]">
+                        <span>FIR Logs: {loc.firCount}</span>
+                        <span>CCTV: {loc.cctvPercent}%</span>
+                        <span>Trust: {loc.trustScore}%</span>
+                      </div>
+                    )}
                   </button>
                 );
               })}
@@ -816,12 +954,18 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
 
           <div className="bg-[#FCF7F1]/50 border border-[#EFE6E1] rounded-[22px] p-4.5 flex items-center justify-between">
             <div>
-              <div className="text-xs font-medium text-[#6E676A]">Safety Score Index</div>
+              <div className="text-xs font-medium text-[#6E676A]">
+                {selectedLocation.dataSource === 'osm-live' ? 'Proximity Score (real, live)' : 'Safety Score Index'}
+              </div>
               <div className="text-3xl font-bold text-[#221F20] mt-0.5">{selectedLocation.safetyScore}/100</div>
             </div>
             <div className="text-right text-xs text-[#6E676A] space-y-0.5">
-              <div>Police Distance: <strong className="text-[#221F20]">{selectedLocation.policeDistanceMeters}m</strong></div>
-              <div>FIR Incidents: <strong className="text-[#221F20]">{selectedLocation.firCount}</strong></div>
+              <div>Nearest Police: <strong className="text-[#221F20]">{selectedLocation.policeDistanceMeters}m</strong></div>
+              {selectedLocation.dataSource === 'osm-live' ? (
+                <div className="text-emerald-600 font-semibold">Live from OpenStreetMap</div>
+              ) : (
+                <div>FIR Incidents: <strong className="text-[#221F20]">{selectedLocation.firCount}</strong></div>
+              )}
             </div>
           </div>
 
@@ -866,52 +1010,12 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           </button>
 
           {aiAnalysisResult && (
-            <div className="bg-[#FFF0F3] border border-[#EFE6E1] rounded-[22px] p-4 space-y-3 text-sm text-[#221F20]">
+            <div className="bg-[#FFF0F3] border border-[#EFE6E1] rounded-[22px] p-4 space-y-2 text-xs text-[#221F20]">
               <div className="font-semibold text-[#A7194B] flex items-center gap-1.5">
                 <Sparkles className="w-4 h-4" />
-                Structured Risk Report
+                AI Analysis Evaluation
               </div>
-
-              <div className="rounded-[18px] border border-[#F4DDE3] bg-white/80 p-3 space-y-1.5">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-[#6E676A]">Executive summary</div>
-                <p className="text-[#221F20] leading-relaxed">{aiAnalysisResult.reportSections.overview}</p>
-              </div>
-
-              <div className="grid gap-2.5">
-                <div className="rounded-[16px] border border-[#F4DDE3] bg-white/70 p-3">
-                  <div className="text-[11px] font-semibold uppercase tracking-wide text-[#6E676A] mb-2">Key findings</div>
-                  <ul className="space-y-1.5">
-                    {aiAnalysisResult.reportSections.keyFindings.map((finding, index) => (
-                      <li key={`${finding.title}-${index}`} className="text-xs text-[#221F20] leading-relaxed">
-                        <span className="font-semibold">{finding.title}</span> · {finding.detail}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                <div className="rounded-[16px] border border-[#F4DDE3] bg-white/70 p-3">
-                  <div className="text-[11px] font-semibold uppercase tracking-wide text-[#6E676A] mb-2">Recommended actions</div>
-                  <ul className="space-y-1.5">
-                    {aiAnalysisResult.reportSections.recommendedActions.map((action, index) => (
-                      <li key={`${action}-${index}`} className="text-xs text-[#221F20] leading-relaxed">• {action}</li>
-                    ))}
-                  </ul>
-                </div>
-
-                <div className="rounded-[16px] border border-[#F4DDE3] bg-white/70 p-3">
-                  <div className="text-[11px] font-semibold uppercase tracking-wide text-[#6E676A] mb-2">Watch points</div>
-                  <ul className="space-y-1.5">
-                    {aiAnalysisResult.reportSections.watchPoints.map((point, index) => (
-                      <li key={`${point}-${index}`} className="text-xs text-[#221F20] leading-relaxed">• {point}</li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-
-              <div className="text-[11px] text-[#6E676A]">
-                <span className="font-semibold text-[#221F20]">Score:</span> {aiAnalysisResult.safetyScore}/100 ·
-                <span className="font-semibold text-[#221F20] ml-2">Risk level:</span> {aiAnalysisResult.riskLevel}
-              </div>
+              <p className="text-[#6E676A] leading-relaxed">{aiAnalysisResult.summary}</p>
             </div>
           )}
 
