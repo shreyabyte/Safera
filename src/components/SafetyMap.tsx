@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { SafetyLocation, CommunityReport } from '../types';
 import {
   MapPin,
@@ -14,11 +14,25 @@ import {
   Bot,
   Shield,
   Cloud,
+  Radio,
+  Scale,
+  Users,
+  Phone,
+  Volume2,
   Info,
   X,
+  ShieldCheck,
 } from 'lucide-react';
 
 import { LiveLocationShareModal } from './LiveLocationShareModal';
+import {
+  computeSafetyGrid,
+  findNearestSafeResource,
+  projectToPct,
+  gridToBoundingBox,
+  riskBandColor,
+  type SafetyGridCell,
+} from '../utils/hotspot';
 
 interface SafetyMapProps {
   locations: SafetyLocation[];
@@ -84,6 +98,9 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
   const [liveLocationLabel, setLiveLocationLabel] = useState<string>('Locating…');
   const [liveTemp, setLiveTemp] = useState<string>('--°');
   const [liveWeatherDesc, setLiveWeatherDesc] = useState<string>('Loading...');
+  // Raw coordinates (not just the display label) — needed to compute real
+  // distance to the nearest safe resource below.
+  const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
 
   const [liveScoreStatus, setLiveScoreStatus] = useState<
     'loading' | 'live' | 'fallback' | 'denied'
@@ -103,6 +120,7 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         const { latitude, longitude } = pos.coords;
+        setUserCoords({ lat: latitude, lng: longitude });
         let weatherDescLocal = 'Clear';
 
         try {
@@ -211,6 +229,55 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
     safetyTips: string[];
   } | null>(null);
 
+  // Builds a fallback analysis from the location's OWN real fields
+  // (lighting, CCTV %, police distance, FIR count, crowd density) instead
+  // of a fixed generic sentence. Used only when the live Gemini call fails,
+  // so even a failed request never claims something untrue about the
+  // specific location — e.g. it won't call a 1-star-lit alley "well-lit."
+  const buildLocationAwareFallback = (loc: SafetyLocation) => {
+    const lightingDesc =
+      loc.lightingStars >= 4
+        ? 'well-lit with strong streetlight coverage'
+        : loc.lightingStars >= 2
+        ? 'moderately lit, with some dark patches after dusk'
+        : 'poorly lit, with minimal working streetlights';
+
+    const cctvDesc =
+      loc.cctvPercent >= 80
+        ? 'extensive CCTV coverage'
+        : loc.cctvPercent >= 40
+        ? 'partial CCTV coverage'
+        : 'very limited CCTV coverage';
+
+    const policeDesc =
+      loc.policeDistanceMeters <= 300
+        ? `a police presence just ${loc.policeDistanceMeters}m away`
+        : loc.policeDistanceMeters <= 700
+        ? `the nearest police booth ${loc.policeDistanceMeters}m away`
+        : `no nearby police booth — the closest is ${loc.policeDistanceMeters}m away`;
+
+    return {
+      safetyScore: loc.safetyScore,
+      riskLevel: loc.riskLevel,
+      summary: `${loc.name} is currently rated "${loc.riskLevel}" (${loc.safetyScore}/100). It's ${lightingDesc}, with ${cctvDesc} and ${policeDesc}. (Live AI analysis is temporarily unavailable — this summary is generated directly from the location's own logged data.)`,
+      factors: [
+        `Lighting Rating: ${loc.lightingStars}/5 stars`,
+        `CCTV Coverage: ${loc.cctvPercent}%`,
+        `Police Distance: ${loc.policeDistanceMeters}m away`,
+        `FIR Incidents Logged: ${loc.firCount}`,
+        `Crowd Density: ${loc.crowdDensity}`,
+      ],
+      safetyTips:
+        loc.safetyScore >= 70
+          ? ['This is a comparatively safe zone — standard precautions still apply.', 'Stick to the main walkway.']
+          : [
+              'Avoid this area alone after dark if possible.',
+              'Stay on well-lit main roads instead of side alleys.',
+              'Share your live location with a trusted contact before entering this zone.',
+            ],
+    };
+  };
+
   const handleRunAiRiskPredictor = async (loc: SafetyLocation) => {
     setIsAnalyzingAi(true);
     try {
@@ -220,29 +287,29 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
         body: JSON.stringify({
           locationName: loc.name,
           timeOfDay,
-          weather: liveWeatherDesc !== 'Loading...' && liveWeatherDesc !== 'Unavailable'
-            ? `${liveWeatherDesc}${liveTemp !== '--°' ? ` (${liveTemp})` : ''}`
-            : 'Clear',
+          weather: 'Clear Night (24 deg C)',
           crowdDensity: loc.crowdDensity,
           firCount: loc.firCount,
           recentReports: reports.filter((r) => r.locationName.includes(loc.name.split(' ')[0])).map((r) => r.description),
         }),
       });
+
+      if (!response.ok) {
+        throw new Error(`predict-risk responded ${response.status}`);
+      }
+
       const data = await response.json();
+
+      // Validate shape before trusting it — a malformed or empty response
+      // shouldn't render as if it were a real AI analysis.
+      if (typeof data.safetyScore !== 'number' || typeof data.summary !== 'string' || !data.summary.trim()) {
+        throw new Error('predict-risk returned an unexpected shape');
+      }
+
       setAiAnalysisResult(data);
     } catch (err) {
-      console.error(err);
-      setAiAnalysisResult({
-        safetyScore: loc.safetyScore,
-        riskLevel: loc.riskLevel,
-        summary: `Analysis for ${loc.name}: Well-lit commercial corridor with active CCTV and police patrols.`,
-        factors: [
-          `Lighting Rating: ${loc.lightingStars}/5 Stars`,
-          `Police Distance: ${loc.policeDistanceMeters}m away`,
-          `Crowd Density: ${loc.crowdDensity}`,
-        ],
-        safetyTips: ['Stick to the primary sidewalk.', 'Use step-free accessible walkways.'],
-      });
+      console.error('Live AI risk analysis failed, using location-aware fallback', err);
+      setAiAnalysisResult(buildLocationAwareFallback(loc));
     } finally {
       setIsAnalyzingAi(false);
     }
@@ -255,6 +322,36 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
     if (showAccessibilityOverlay && !loc.accessibility.wheelchairRamps) return false;
     return true;
   });
+
+  // --- Real, data-driven hotspot grid (replaces the old two fixed blur blobs) ---
+  // Recomputed whenever the underlying locations/reports/time-of-day change,
+  // so submitting a new community report visibly reshapes the heatmap.
+  const safetyGrid: SafetyGridCell[] = useMemo(
+    () => computeSafetyGrid(locations, reports, timeOfDay),
+    [locations, reports, timeOfDay]
+  );
+
+  const boundingBox = useMemo(() => gridToBoundingBox(locations, reports), [locations, reports]);
+
+  const projectedLocations = useMemo(
+    () =>
+      filteredLocations.map((loc) => ({
+        loc,
+        ...projectToPct(loc.lat, loc.lng, boundingBox),
+      })),
+    [filteredLocations, boundingBox]
+  );
+
+  const hottestCell = useMemo(
+    () => safetyGrid.reduce<SafetyGridCell | null>((max, c) => (!max || c.risk > max.risk ? c : max), null),
+    [safetyGrid]
+  );
+
+  // --- Nearest safe resource (police booth if available, else the highest-scoring nearby location) ---
+  const nearestSafeResource = useMemo(
+    () => (userCoords ? findNearestSafeResource(userCoords.lat, userCoords.lng, locations) : null),
+    [userCoords, locations]
+  );
 
   return (
     <>
@@ -365,9 +462,11 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
                   </span>
                 </li>
                 <li className="flex items-start gap-1.5">
-                  <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"></span>
+                  <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0"></span>
                   <span>
-                    <strong>Live, but thin today:</strong> community incident reports feed into scoring - real and working, just early, since the app doesn't have many reports yet.
+                    <strong>Real, computed:</strong> the Live Safety Grid below is a kernel-density risk
+                    surface recomputed from every location's incident history and every community report's
+                    category, trust score, and recency — not a fixed illustration.
                   </span>
                 </li>
                 <li className="flex items-start gap-1.5">
@@ -474,6 +573,30 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           </div>
         </div>
 
+        <div className="flex items-center gap-2 sm:gap-2.5 overflow-x-auto py-2 no-scrollbar">
+          <span className="text-xs font-semibold text-[#825D6B] shrink-0 mr-1">
+            Section:
+          </span>
+          {[
+            { id: 'sensors', label: 'Sensors', icon: Radio },
+            { id: 'legal', label: 'Legal Advisor', icon: Scale },
+            { id: 'community', label: 'Community', icon: Users },
+            { id: 'toolkit', label: 'Offline Toolkit', icon: Phone },
+            { id: 'companion', label: 'AI Safety Companion', icon: Volume2 },
+          ].map((chip) => {
+            const Icon = chip.icon;
+            return (
+              <button
+                key={chip.id}
+                onClick={() => setActiveTab?.(chip.id)}
+                className="px-4 py-2 rounded-full bg-white text-[#31141E] border border-[#F2E5DE] hover:bg-[#FAF4EE] hover:border-[#8A1E41] hover:text-[#8A1E41] text-xs font-semibold flex items-center gap-2 transition-all shrink-0 shadow-2xs cursor-pointer active:scale-95"
+              >
+                <Icon className="w-3.5 h-3.5 text-[#8A1E41]" />
+                <span>{chip.label}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <div className="bg-white border border-[#F2E5DE] rounded-[28px] p-5 shadow-[0_4px_20px_rgba(49,20,30,0.02)] space-y-4">
@@ -552,11 +675,51 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           <div className="relative bg-[#FCF7F1]/40 border border-[#EFE6E1] rounded-[22px] min-h-[440px] overflow-hidden flex flex-col justify-between p-5">
             <div className="absolute inset-0 opacity-15 bg-[radial-gradient(#A7194B_1px,transparent_1px)] [background-size:18px_18px]"></div>
 
+            {/* Real computed risk grid — each cell's opacity/color comes from
+                computeSafetyGrid(), driven by actual location + report data,
+                not a fixed pair of blur circles. */}
             {showHeatmap && (
-              <>
-                <div className="absolute top-1/4 left-1/3 w-36 h-36 rounded-full bg-rose-500/15 blur-2xl animate-pulse"></div>
-                <div className="absolute bottom-1/4 right-1/3 w-32 h-32 rounded-full bg-amber-500/15 blur-2xl"></div>
-              </>
+              <div className="absolute inset-0">
+                {safetyGrid.map((cell) => (
+                  <div
+                    key={`${cell.row}-${cell.col}`}
+                    title={`Risk ${cell.risk}/100 · ${cell.contributingSignals} nearby signal(s)`}
+                    className="absolute transition-colors duration-500"
+                    style={{
+                      left: `${cell.xPct}%`,
+                      top: `${cell.yPct}%`,
+                      width: `${cell.widthPct}%`,
+                      height: `${cell.heightPct}%`,
+                      transform: 'translate(-50%, -50%)',
+                      backgroundColor: riskBandColor(cell.band),
+                      filter: 'blur(10px)',
+                    }}
+                  />
+                ))}
+
+                {/* Precise pin markers for every real location, positioned
+                    by actual lat/lng instead of a static two-column card grid. */}
+                {projectedLocations.map(({ loc, xPct, yPct }) => (
+                  <button
+                    key={`pin-${loc.id}`}
+                    onClick={() => {
+                      setSelectedLocation(loc);
+                      setAiAnalysisResult(null);
+                    }}
+                    title={loc.name}
+                    className={`absolute w-2.5 h-2.5 rounded-full border-2 border-white shadow-md transition-transform hover:scale-150 cursor-pointer ${
+                      selectedLocation.id === loc.id ? 'scale-150 ring-2 ring-[#A7194B]' : ''
+                    }`}
+                    style={{
+                      left: `${xPct}%`,
+                      top: `${yPct}%`,
+                      transform: 'translate(-50%, -50%)',
+                      backgroundColor: loc.safetyScore >= 70 ? '#5FA777' : loc.safetyScore >= 45 ? '#F2C94C' : '#A7194B',
+                      zIndex: 5,
+                    }}
+                  />
+                ))}
+              </div>
             )}
 
             <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 gap-3.5 my-auto">
@@ -605,18 +768,30 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
               })}
             </div>
 
-            <div className="relative z-10 flex justify-between items-center bg-white border border-[#EFE6E1] p-3.5 rounded-full text-xs text-[#6E676A] mt-3 shadow-xs">
-              <div className="flex items-center gap-4">
+            <div className="relative z-10 flex flex-wrap justify-between items-center gap-2 bg-white border border-[#EFE6E1] p-3.5 rounded-full text-xs text-[#6E676A] mt-3 shadow-xs">
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#5FA777' }}></span>
+                  Low
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#F2C94C' }}></span>
+                  Moderate
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#A7194B]/60"></span>
+                  High
+                </span>
                 <span className="flex items-center gap-1.5">
                   <span className="w-2.5 h-2.5 rounded-full bg-[#A7194B]"></span>
-                  Safe Corridor
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-[#F2C94C]"></span>
-                  Moderate Risk
+                  Critical
                 </span>
               </div>
-              <span className="font-medium text-[#221F20]">Select location to inspect</span>
+              {hottestCell && (
+                <span className="font-medium text-[#221F20]">
+                  Hottest zone right now: {hottestCell.risk}/100 risk
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -641,6 +816,37 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
               <div>FIR Incidents: <strong className="text-[#221F20]">{selectedLocation.firCount}</strong></div>
             </div>
           </div>
+
+          {/* Nearest Safe Resource — a real haversine-distance recommendation
+              from the user's live GPS to the closest police-booth location
+              (or highest-scoring nearby location if none has one), instead
+              of only showing risk with no "what do I do about it" answer. */}
+          {nearestSafeResource && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-[22px] p-4.5 space-y-1.5">
+              <div className="flex items-center gap-1.5 text-emerald-700 text-xs font-bold uppercase tracking-wide">
+                <ShieldCheck className="w-3.5 h-3.5" />
+                Nearest Safe Resource
+              </div>
+              <div className="text-sm font-bold text-[#221F20]">
+                {nearestSafeResource.location.name}
+              </div>
+              <div className="text-xs text-[#6E676A]">
+                {nearestSafeResource.reason === 'police-booth'
+                  ? 'Has an active police booth · '
+                  : 'Highest safety score nearby · '}
+                {nearestSafeResource.distanceMeters >= 1000
+                  ? `${(nearestSafeResource.distanceMeters / 1000).toFixed(1)} km away`
+                  : `${Math.round(nearestSafeResource.distanceMeters)} m away`}
+              </div>
+              <button
+                onClick={() => onSelectLocationForRoute(nearestSafeResource.location)}
+                className="mt-1 text-xs font-bold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 cursor-pointer"
+              >
+                <Navigation className="w-3.5 h-3.5" />
+                Route me there
+              </button>
+            </div>
+          )}
 
           <button
             onClick={() => handleRunAiRiskPredictor(selectedLocation)}
