@@ -1,19 +1,16 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState } from 'react';
 import { EvidenceItem } from '../types';
 import { GuardIaLogo } from './GuardIaLogo';
-import { getBestEffortLocation, SosCoords } from '../utils/sos';
-import { reverseGeocode } from '../lib/geocode';
+import { EvidenceRecorderState } from '../hooks/useEvidenceRecorder';
 import {
   Shield,
   Camera,
-  Mic,
   Lock,
   Upload,
   CheckCircle2,
   Video,
   StopCircle,
   RefreshCw,
-  Eye,
   Download,
   Key,
   ShieldCheck,
@@ -21,151 +18,38 @@ import {
 
 interface EvidenceVaultProps {
   evidenceList: EvidenceItem[];
-  onAddEvidence: (item: EvidenceItem) => void;
-  isRecordingVault: boolean;
-  setIsRecordingVault: (val: boolean) => void;
+  /**
+   * Shared recording engine from useEvidenceRecorder, mounted once in
+   * App.tsx. This component no longer owns its own MediaRecorder/camera
+   * refs — it reads and controls the same session that SOS can also
+   * start, so recording that begins from an SOS trigger shows up here
+   * live even if the user switches to this tab mid-recording.
+   */
+  recorder: EvidenceRecorderState;
 }
 
-export const EvidenceVault: React.FC<EvidenceVaultProps> = ({
-  evidenceList,
-  onAddEvidence,
-  isRecordingVault,
-  setIsRecordingVault,
-}) => {
-  const [cameraMode, setCameraMode] = useState<'front' | 'rear'>('front');
-  const [recordType, setRecordType] = useState<'video' | 'audio'>('video');
-  const [recordSeconds, setRecordSeconds] = useState(0);
+export const EvidenceVault: React.FC<EvidenceVaultProps> = ({ evidenceList, recorder }) => {
+  const {
+    videoRef,
+    isRecording,
+    isSaving,
+    recordSeconds,
+    cameraMode,
+    setCameraMode,
+    recordingCoords,
+    startRecording,
+    stopRecording,
+  } = recorder;
+
   const [isLocked, setIsLocked] = useState(true);
   const [pinInput, setPinInput] = useState('');
-  const [stealthDisguise, setStealthDisguise] = useState(false);
 
-  // Real GPS fix for the current recording — resolved when recording
-  // starts so the watermark and the saved evidence item both carry the
-  // actual location instead of a fixed placeholder.
-  const [recordingCoords, setRecordingCoords] = useState<SosCoords | null>(null);
-  const [recordingLocationName, setRecordingLocationName] = useState<string | null>(null);
-
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
-
-  // Live Timer during Recording
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isRecordingVault) {
-      interval = setInterval(() => {
-        setRecordSeconds((prev) => prev + 1);
-      }, 1000);
-    } else {
-      setRecordSeconds(0);
-    }
-    return () => clearInterval(interval);
-  }, [isRecordingVault]);
-
-  // Handle Camera Feed Request
-  const startCamera = async () => {
-    try {
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: recordType === 'video' ? { facingMode: cameraMode === 'front' ? 'user' : 'environment' } : false,
-          audio: true,
-        });
-        mediaStreamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-        }
-        return stream;
-      }
-    } catch (err) {
-      console.log('Camera permission or availability:', err);
-    }
-    return null;
-  };
-
-  const stopCamera = () => {
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
-      mediaStreamRef.current = null;
-    }
-  };
-
-  const handleStartRecording = async () => {
-    const stream = await startCamera();
-
-    // Tag this capture with a real GPS fix (and human-readable name) up
-    // front, in parallel with recording, so it's ready by the time we
-    // save the evidence item — same pattern as the SOS dispatch flow.
-    setRecordingCoords(null);
-    setRecordingLocationName(null);
-    getBestEffortLocation().then(async (fix) => {
-      setRecordingCoords(fix);
-      if (fix) {
-        const name = await reverseGeocode(fix.lat, fix.lng);
-        setRecordingLocationName(name);
-      }
-    });
-
-    recordedChunksRef.current = [];
-    if (stream && 'MediaRecorder' in window) {
-      try {
-        const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
-          ? 'video/webm;codecs=vp9,opus'
-          : MediaRecorder.isTypeSupported('video/webm')
-          ? 'video/webm'
-          : '';
-        const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
-        recorder.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data);
-        };
-        recorder.start(1000);
-        mediaRecorderRef.current = recorder;
-      } catch (err) {
-        console.log('MediaRecorder unavailable, falling back to metadata-only capture:', err);
-        mediaRecorderRef.current = null;
-      }
-    }
-
-    setIsRecordingVault(true);
-  };
-
-  const handleStopRecording = () => {
-    setIsRecordingVault(false);
-
-    const recorder = mediaRecorderRef.current;
-    const finalizeEntry = (mediaUrl: string, fileSizeBytes: number) => {
-      const newEntry: EvidenceItem = {
-        id: `ev-${Date.now()}`,
-        title: `Safera_${recordType.toUpperCase()}_${new Date().toISOString().slice(0, 10)}_${Date.now()}.webm`,
-        type: recordType,
-        timestamp: new Date().toLocaleString(),
-        locationName: recordingLocationName || (recordingCoords ? `${recordingCoords.lat.toFixed(4)}, ${recordingCoords.lng.toFixed(4)}` : 'Location unavailable'),
-        coords: recordingCoords ? { lat: recordingCoords.lat, lng: recordingCoords.lng } : { lat: 0, lng: 0 },
-        duration: `00:${recordSeconds < 10 ? '0' + recordSeconds : recordSeconds}`,
-        fileSize: fileSizeBytes > 0 ? `${(fileSizeBytes / (1024 * 1024)).toFixed(1)} MB` : `${(recordSeconds * 1.2 + 1.5).toFixed(1)} MB (estimated)`,
-        mediaUrl,
-        isEncrypted: true,
-        isCloudBackedUp: true,
-      };
-      onAddEvidence(newEntry);
-      stopCamera();
-    };
-
-    if (recorder && recorder.state !== 'inactive') {
-      recorder.onstop = () => {
-        const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'video/webm' });
-        const url = blob.size > 0 ? URL.createObjectURL(blob) : '';
-        finalizeEntry(url, blob.size);
-        mediaRecorderRef.current = null;
-      };
-      recorder.stop();
-    } else {
-      // No MediaRecorder support (or camera permission was denied) — still
-      // save a metadata-only entry rather than silently dropping the report.
-      finalizeEntry('', 0);
-    }
-  };
-
+  // SECURITY NOTE: this PIN check accepts '1234' (the documented default)
+  // or a blank PIN, meaning anyone holding an unlocked device can view
+  // saved evidence with zero effort. Left unchanged here since it's a
+  // separate decision (the vault's view/unlock flow) from what was asked
+  // for in this pass (SOS-triggered encrypted recording) — flagging
+  // rather than silently changing your auth flow.
   const handleUnlockVault = () => {
     if (pinInput === '1234' || pinInput === '') {
       setIsLocked(false);
@@ -184,34 +68,31 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({
             <div>
               <div className="flex items-center space-x-2">
                 <ShieldCheck className="w-4 h-4 text-[#A70F43]" />
-                <h2 className="text-base font-bold text-[#2F2B2D]">Encrypted Cloud Evidence Vault</h2>
+                <h2 className="text-base font-extrabold text-[#2F2B2D]">Evidence Vault</h2>
               </div>
-              <p className="text-xs text-[#7B7280] mt-0.5">
-                Tamper-proof video & audio recorder with live GPS watermark, timestamping, and cloud backup.
-              </p>
+              <p className="text-xs text-[#7B7280]">Encrypted cloud audio &amp; video logs</p>
             </div>
           </div>
+        </div>
 
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={() => setStealthDisguise(!stealthDisguise)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 transition-all ${
-                stealthDisguise
-                  ? 'bg-[#A70F43] text-white border-[#8D0D39]'
-                  : 'bg-[#FFF8F9] text-[#7B7280] border-[#E9D8DE]'
-              }`}
-            >
-              <Lock className="w-3.5 h-3.5 text-[#A70F43]" />
-              <span>Stealth Mode {stealthDisguise ? 'ON' : 'OFF'}</span>
-            </button>
+        <div className="flex items-center justify-between bg-[#FFF8F9] border border-[#E9D8DE] rounded-xl p-3">
+          <div className="flex items-center gap-2">
+            <Shield className="w-4 h-4 text-[#A70F43]" />
+            <div>
+              <div className="text-xs font-bold text-[#2F2B2D] flex items-center gap-1.5">
+                Encrypted Cloud Evidence Vault
+              </div>
+              <p className="text-[10px] text-[#7B7280]">
+                Tamper-proof video &amp; audio recorder with live GPS watermark, timestamping, and cloud backup.
+              </p>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Main Grid: Recorder HUD & Vault Files */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* Live Camera Recorder Canvas */}
-        <div className="lg:col-span-6 bg-white border border-[#E9D8DE] rounded-2xl p-4 sm:p-5 shadow-sm space-y-3 flex flex-col justify-between">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Live Capture Panel */}
+        <div className="lg:col-span-6 bg-white border border-[#E9D8DE] rounded-2xl p-4 sm:p-5 shadow-sm space-y-3">
           <div className="flex items-center justify-between border-b border-[#E9D8DE] pb-2 text-xs">
             <span className="font-bold text-[#2F2B2D] flex items-center gap-2">
               <Camera className="w-4 h-4 text-[#A70F43]" />
@@ -228,7 +109,6 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({
 
           {/* Camera Stream Viewport Container */}
           <div className="relative bg-[#FFF8F9] border border-[#E9D8DE] rounded-xl overflow-hidden min-h-[250px] flex items-center justify-center">
-            {/* Real Video Element if Stream active */}
             <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover absolute inset-0" />
 
             {/* Live Watermark Overlay (Timestamp + GPS + Hash) */}
@@ -242,7 +122,7 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({
                   GPS:{' '}
                   {recordingCoords
                     ? `${recordingCoords.lat.toFixed(4)} N, ${recordingCoords.lng.toFixed(4)} E`
-                    : isRecordingVault
+                    : isRecording
                     ? 'Acquiring signal…'
                     : 'Awaiting recording'}
                 </div>
@@ -251,14 +131,21 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({
             </div>
 
             {/* Recording Indicator */}
-            {isRecordingVault && (
+            {isRecording && (
               <div className="absolute bottom-3 left-3 z-10 flex items-center space-x-2 bg-[#A70F43] text-white px-3 py-1 rounded-full text-xs font-mono font-bold animate-pulse border border-[#8D0D39]">
                 <span className="w-2 h-2 rounded-full bg-white"></span>
                 <span>REC 00:{recordSeconds < 10 ? '0' + recordSeconds : recordSeconds}</span>
               </div>
             )}
 
-            {!isRecordingVault && (
+            {isSaving && (
+              <div className="absolute bottom-3 right-3 z-10 flex items-center space-x-2 bg-white text-[#A70F43] px-3 py-1 rounded-full text-xs font-mono font-bold border border-[#E9D8DE]">
+                <Upload className="w-3 h-3" />
+                <span>Encrypting &amp; uploading…</span>
+              </div>
+            )}
+
+            {!isRecording && !isSaving && (
               <div className="relative z-10 text-center p-6 space-y-2">
                 <div className="w-12 h-12 mx-auto rounded-full bg-white text-[#A70F43] border border-[#E9D8DE] flex items-center justify-center shadow-sm">
                   <Video className="w-6 h-6" />
@@ -270,17 +157,18 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({
 
           {/* Recording Controls Bar */}
           <div className="grid grid-cols-2 gap-2 pt-1">
-            {!isRecordingVault ? (
+            {!isRecording ? (
               <button
-                onClick={handleStartRecording}
-                className="col-span-2 py-2.5 rounded-xl bg-[#A70F43] hover:bg-[#8D0D39] text-white font-bold text-xs shadow-sm flex items-center justify-center gap-2 transition-all border border-[#8D0D39]"
+                onClick={startRecording}
+                disabled={isSaving}
+                className="col-span-2 py-2.5 rounded-xl bg-[#A70F43] hover:bg-[#8D0D39] disabled:opacity-60 text-white font-bold text-xs shadow-sm flex items-center justify-center gap-2 transition-all border border-[#8D0D39]"
               >
                 <Video className="w-4 h-4" />
-                <span>START ENCRYPTED RECORDING</span>
+                <span>{isSaving ? 'SAVING…' : 'START ENCRYPTED RECORDING'}</span>
               </button>
             ) : (
               <button
-                onClick={handleStopRecording}
+                onClick={stopRecording}
                 className="col-span-2 py-2.5 rounded-xl bg-[#A70F43] hover:bg-[#8D0D39] text-white font-bold text-xs shadow-sm flex items-center justify-center gap-2 transition-all animate-pulse border border-[#8D0D39]"
               >
                 <StopCircle className="w-4 h-4" />
@@ -355,9 +243,15 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({
                       </div>
                     </div>
 
-                    <span className="text-[#5FA777] text-[9px] font-mono flex items-center gap-1 bg-[#FFF0F3] px-2 py-0.5 rounded border border-[#E9D8DE] font-bold">
-                      <CheckCircle2 className="w-3 h-3 text-[#5FA777]" />
-                      Cloud Sync
+                    <span
+                      className={`text-[9px] font-mono flex items-center gap-1 px-2 py-0.5 rounded border font-bold ${
+                        item.isCloudBackedUp
+                          ? 'text-[#5FA777] bg-[#FFF0F3] border-[#E9D8DE]'
+                          : 'text-[#A70F43] bg-[#FFF0F3] border-[#E9D8DE]'
+                      }`}
+                    >
+                      <CheckCircle2 className="w-3 h-3" />
+                      {item.isCloudBackedUp ? 'Cloud Sync' : 'Local Only (upload failed)'}
                     </span>
                   </div>
 
@@ -397,4 +291,3 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({
     </div>
   );
 };
-
