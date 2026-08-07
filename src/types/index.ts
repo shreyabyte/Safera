@@ -32,6 +32,18 @@ export interface SafetyLocation {
   accessibility: AccessibilityFeatures;
   trustScore: number; // 0-100% based on pattern recognition
   reportCount: number;
+  /**
+   * Where this location's data actually came from. 'osm-live' = fetched
+   * just now from OpenStreetMap/Overpass for real, real coordinates — its
+   * firCount/cctvPercent/trustScore/lightingStars are honestly unknown
+   * (left at neutral placeholders, not fabricated) since no public source
+   * has real crime data. 'seed-fallback' = the bundled demo dataset, only
+   * used when a live fetch isn't possible. Undefined = pre-existing seed
+   * data from before this field existed; treat the same as seed-fallback.
+   */
+  dataSource?: 'osm-live' | 'seed-fallback';
+  /** Only set for osm-live locations — what kind of real place this is. */
+  placeType?: 'police' | 'hospital' | 'pharmacy' | 'fire_station';
 }
 
 export interface CommunityReport {
