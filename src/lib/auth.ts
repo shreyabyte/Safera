@@ -25,14 +25,17 @@ export interface SignUpInput {
 
 // SHA-256 hash via the browser's built-in Web Crypto API. See the
 // StoredAccount comment in types/index.ts — this is only meant to avoid
-// plaintext passwords in localStorage for a demo, not real security.
-async function hashPassword(password: string): Promise<string> {
-  const bytes = new TextEncoder().encode(password);
+// plaintext passwords in localStorage for a demo, not real security. Also
+// reused for the Evidence Vault PIN below, since the same "don't store it
+// in plaintext" reasoning applies there too.
+async function hashSecret(secret: string): Promise<string> {
+  const bytes = new TextEncoder().encode(secret);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
 }
+const hashPassword = hashSecret;
 
 function readAccounts(): Record<string, StoredAccount> {
   try {
@@ -177,4 +180,52 @@ export function requestLocationAccess(): Promise<{ lat: number; lng: number } | 
       { timeout: 8000 }
     );
   });
+}
+
+// ---- Evidence Vault PIN ----
+// Replaces the old EvidenceVault.tsx logic, which accepted the hardcoded
+// string '1234' OR a completely BLANK input as a valid unlock — meaning
+// anyone with an unlocked phone could open the vault with zero effort. A
+// real per-account PIN, hashed the same way the login password is, closes
+// that gap: there's no default and no blank-input bypass.
+
+function currentSessionEmail(): string | null {
+  return localStorage.getItem(SESSION_KEY);
+}
+
+/** Whether the currently logged-in account has ever set a vault PIN. */
+export function hasVaultPin(): boolean {
+  const email = currentSessionEmail();
+  if (!email) return false;
+  const account = readAccounts()[email];
+  return !!account?.vaultPinHash;
+}
+
+/** Sets (or replaces) the current account's vault PIN. Requires at least 4 digits — no blank PIN is ever accepted. */
+export async function setVaultPin(pin: string): Promise<void> {
+  const email = currentSessionEmail();
+  if (!email) throw new Error('You must be logged in to set a vault PIN.');
+  if (!/^\d{4,8}$/.test(pin)) {
+    throw new Error('PIN must be 4-8 digits.');
+  }
+
+  const accounts = readAccounts();
+  const account = accounts[email];
+  if (!account) throw new Error('Account not found.');
+
+  account.vaultPinHash = await hashSecret(pin);
+  accounts[email] = account;
+  writeAccounts(accounts);
+}
+
+/** Verifies a PIN attempt against the current account's stored hash. Always false if no PIN has been set yet (call hasVaultPin() first to route to setup instead). */
+export async function verifyVaultPin(pin: string): Promise<boolean> {
+  const email = currentSessionEmail();
+  if (!email) return false;
+  const account = readAccounts()[email];
+  if (!account?.vaultPinHash) return false;
+  if (!pin) return false; // explicit: a blank attempt is never treated as valid
+
+  const attemptHash = await hashSecret(pin);
+  return attemptHash === account.vaultPinHash;
 }
