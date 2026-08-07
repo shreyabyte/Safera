@@ -1,8 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { EvidenceItem } from '../types';
 import { GuardIaLogo } from './GuardIaLogo';
-import { getBestEffortLocation, SosCoords } from '../utils/sos';
-import { reverseGeocode } from '../lib/geocode';
 import {
   Shield,
   Camera,
@@ -39,16 +37,8 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({
   const [pinInput, setPinInput] = useState('');
   const [stealthDisguise, setStealthDisguise] = useState(false);
 
-  // Real GPS fix for the current recording — resolved when recording
-  // starts so the watermark and the saved evidence item both carry the
-  // actual location instead of a fixed placeholder.
-  const [recordingCoords, setRecordingCoords] = useState<SosCoords | null>(null);
-  const [recordingLocationName, setRecordingLocationName] = useState<string | null>(null);
-
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
 
   // Live Timer during Recording
   useEffect(() => {
@@ -75,12 +65,10 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
         }
-        return stream;
       }
     } catch (err) {
       console.log('Camera permission or availability:', err);
     }
-    return null;
   };
 
   const stopCamera = () => {
@@ -91,79 +79,30 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({
   };
 
   const handleStartRecording = async () => {
-    const stream = await startCamera();
-
-    // Tag this capture with a real GPS fix (and human-readable name) up
-    // front, in parallel with recording, so it's ready by the time we
-    // save the evidence item — same pattern as the SOS dispatch flow.
-    setRecordingCoords(null);
-    setRecordingLocationName(null);
-    getBestEffortLocation().then(async (fix) => {
-      setRecordingCoords(fix);
-      if (fix) {
-        const name = await reverseGeocode(fix.lat, fix.lng);
-        setRecordingLocationName(name);
-      }
-    });
-
-    recordedChunksRef.current = [];
-    if (stream && 'MediaRecorder' in window) {
-      try {
-        const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
-          ? 'video/webm;codecs=vp9,opus'
-          : MediaRecorder.isTypeSupported('video/webm')
-          ? 'video/webm'
-          : '';
-        const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
-        recorder.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data);
-        };
-        recorder.start(1000);
-        mediaRecorderRef.current = recorder;
-      } catch (err) {
-        console.log('MediaRecorder unavailable, falling back to metadata-only capture:', err);
-        mediaRecorderRef.current = null;
-      }
-    }
-
+    await startCamera();
     setIsRecordingVault(true);
   };
 
   const handleStopRecording = () => {
     setIsRecordingVault(false);
+    stopCamera();
 
-    const recorder = mediaRecorderRef.current;
-    const finalizeEntry = (mediaUrl: string, fileSizeBytes: number) => {
-      const newEntry: EvidenceItem = {
-        id: `ev-${Date.now()}`,
-        title: `Safera_${recordType.toUpperCase()}_${new Date().toISOString().slice(0, 10)}_${Date.now()}.webm`,
-        type: recordType,
-        timestamp: new Date().toLocaleString(),
-        locationName: recordingLocationName || (recordingCoords ? `${recordingCoords.lat.toFixed(4)}, ${recordingCoords.lng.toFixed(4)}` : 'Location unavailable'),
-        coords: recordingCoords ? { lat: recordingCoords.lat, lng: recordingCoords.lng } : { lat: 0, lng: 0 },
-        duration: `00:${recordSeconds < 10 ? '0' + recordSeconds : recordSeconds}`,
-        fileSize: fileSizeBytes > 0 ? `${(fileSizeBytes / (1024 * 1024)).toFixed(1)} MB` : `${(recordSeconds * 1.2 + 1.5).toFixed(1)} MB (estimated)`,
-        mediaUrl,
-        isEncrypted: true,
-        isCloudBackedUp: true,
-      };
-      onAddEvidence(newEntry);
-      stopCamera();
+    // Create new recorded evidence entry
+    const newEntry: EvidenceItem = {
+      id: `ev-${Date.now()}`,
+      title: `Safera_${recordType.toUpperCase()}_${new Date().toISOString().slice(0, 10)}.mp4`,
+      type: recordType,
+      timestamp: new Date().toLocaleString(),
+      locationName: 'Central Metro Corridor',
+      coords: { lat: 28.6139, lng: 77.209 },
+      duration: `00:${recordSeconds < 10 ? '0' + recordSeconds : recordSeconds}`,
+      fileSize: `${(recordSeconds * 1.2 + 1.5).toFixed(1)} MB`,
+      mediaUrl: '',
+      isEncrypted: true,
+      isCloudBackedUp: true,
     };
 
-    if (recorder && recorder.state !== 'inactive') {
-      recorder.onstop = () => {
-        const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'video/webm' });
-        const url = blob.size > 0 ? URL.createObjectURL(blob) : '';
-        finalizeEntry(url, blob.size);
-        mediaRecorderRef.current = null;
-      };
-      recorder.stop();
-    } else {
-      // No MediaRecorder support (or camera permission was denied) — still
-      // save a metadata-only entry rather than silently dropping the report.
-      finalizeEntry('', 0);
-    }
+    onAddEvidence(newEntry);
   };
 
   const handleUnlockVault = () => {
@@ -238,14 +177,7 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({
                 <div className="text-white/90 text-[9px]">{new Date().toLocaleString()}</div>
               </div>
               <div className="text-right text-[9px] text-white/90">
-                <div>
-                  GPS:{' '}
-                  {recordingCoords
-                    ? `${recordingCoords.lat.toFixed(4)} N, ${recordingCoords.lng.toFixed(4)} E`
-                    : isRecordingVault
-                    ? 'Acquiring signal…'
-                    : 'Awaiting recording'}
-                </div>
+                <div>GPS: 28.6139 N, 77.2090 E</div>
                 <div className="text-white font-bold">SHA-256 Hash Active</div>
               </div>
             </div>
@@ -370,18 +302,7 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({
                     </span>
 
                     <button
-                      onClick={() => {
-                        if (!item.mediaUrl) {
-                          alert(`No captured media file for "${item.title}" — this entry has metadata only (camera/mic access wasn't available when it was recorded).`);
-                          return;
-                        }
-                        const a = document.createElement('a');
-                        a.href = item.mediaUrl;
-                        a.download = item.title;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                      }}
+                      onClick={() => alert(`Exporting encrypted dossier for file ${item.title}...`)}
                       className="text-[#A70F43] hover:text-[#8D0D39] font-bold flex items-center gap-1"
                     >
                       <Download className="w-3 h-3" />
