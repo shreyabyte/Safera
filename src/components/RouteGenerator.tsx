@@ -12,6 +12,8 @@ import {
   LatLng,
   RouteStep,
 } from "../lib/routing";
+import { scoreRoutePath, TimeOfDay as GridTimeOfDay } from "../utils/hotspot";
+import { CommunityReport } from "../types";
 
 import {
   Shield,
@@ -29,21 +31,15 @@ import {
 
 interface RouteGeneratorProps {
   locations: SafetyLocation[];
+  reports: CommunityReport[];
   selectedLocationTarget?: SafetyLocation;
-  /**
-   * Called once selectedLocationTarget has been consumed by the auto-route
-   * effect below. Lets the parent clear its own state so the target doesn't
-   * outlive this trip and silently re-trigger a route next time this
-   * component mounts (e.g. navigating back to the Routes tab normally).
-   */
-  onTargetConsumed?: () => void;
   onStartNavigation: (route: RouteOption) => void;
 }
 
 export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
   locations,
+  reports,
   selectedLocationTarget,
-  onTargetConsumed,
   onStartNavigation,
 }) => {
   const [origin, setOrigin] = useState("");
@@ -121,15 +117,44 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       }
       const data = await res.json();
 
+      // Maps this screen's local time-of-day options onto the risk grid's
+      // own TimeOfDay type so the route scorer and the Live Safety Grid on
+      // the Map tab always agree on what "Night" means.
+      const gridTimeOfDay: GridTimeOfDay =
+        timeOfDay === "Evening" ? "Dusk" : timeOfDay === "Late Night" ? "Late Night" : timeOfDay === "Day" ? "Day" : "Night";
+
+      // Score every real OSRM path against actual location + report data —
+      // same idea as danger-index safe-routing research (score path
+      // segments against real incident data instead of trusting an AI
+      // guess), computed here via the same kernel model as the Live Safety
+      // Grid. This numeric score and these risk segments are now grounded
+      // in real geodata regardless of whether the AI call above succeeds.
+      const assessedRoutes = realRoutes.map((r) => scoreRoutePath(r.coordinates, locations, reports, gridTimeOfDay));
+
       if (data.routes && Array.isArray(data.routes) && data.routes.length > 0) {
         const usableCount = Math.min(data.routes.length, realRoutes.length);
-        const updatedRoutes = data.routes
+        const updatedRoutes: RouteOption[] = data.routes
           .slice(0, usableCount)
-          .map((r: RouteOption, idx: number) => ({
-            ...r,
-            distance: formatDistance(realRoutes[idx].distanceMeters),
-            estimatedTime: formatDuration(realRoutes[idx].durationSeconds),
-          }));
+          .map((r: RouteOption, idx: number) => {
+            const assessment = assessedRoutes[idx];
+            return {
+              ...r,
+              distance: formatDistance(realRoutes[idx].distanceMeters),
+              estimatedTime: formatDuration(realRoutes[idx].durationSeconds),
+              // Real numbers override the AI's guessed ones — the AI's text
+              // (name, tag, highlights) is still useful descriptive color,
+              // but the score and warnings people actually rely on now come
+              // from real distance-to-known-risk math.
+              safetyScore: assessment.pathSafetyScore,
+              lightingPercent: assessment.lightingPercent,
+              accessibilityScore: assessment.accessibilityPercent,
+              riskSegments: assessment.riskSegments.length > 0 ? assessment.riskSegments : [],
+              highlights: assessment.policeBoothNearby
+                ? [...r.highlights, "Passes within 400m of an active police booth"]
+                : r.highlights,
+            };
+          })
+          .sort((a, b) => b.safetyScore - a.safetyScore);
         setRoutes(updatedRoutes);
         setActiveRouteId(updatedRoutes[0].id);
 
@@ -138,9 +163,41 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
             "Only one distinct walking path was found between these points — showing a single verified route rather than fabricated alternatives.",
           );
         }
+      } else if (realRoutes.length > 0) {
+        // AI text unavailable (no API key, quota, network) — build route
+        // cards entirely from real OSRM geometry + the computed risk
+        // scores above, so the feature still works with zero AI dependency
+        // instead of failing silently.
+        const synthesizedRoutes: RouteOption[] = realRoutes.map((r, idx) => {
+          const assessment = assessedRoutes[idx];
+          const rank = [...assessedRoutes].sort((a, b) => b.pathSafetyScore - a.pathSafetyScore).indexOf(assessment);
+          return {
+            id: `route-computed-${idx}`,
+            name: rank === 0 ? "Recommended Safe Route" : `Alternate Route ${idx + 1}`,
+            tag: rank === 0 ? "Safest (computed)" : "Alternate (computed)",
+            distance: formatDistance(r.distanceMeters),
+            estimatedTime: formatDuration(r.durationSeconds),
+            safetyScore: assessment.pathSafetyScore,
+            lightingPercent: assessment.lightingPercent,
+            accessibilityScore: assessment.accessibilityPercent,
+            highlights: [
+              `${assessment.cctvPercent}% average CCTV coverage along this path`,
+              assessment.policeBoothNearby
+                ? "Passes within 400m of an active police booth"
+                : "No police booth directly on this path",
+            ],
+            riskSegments: assessment.riskSegments,
+          };
+        }).sort((a, b) => b.safetyScore - a.safetyScore);
+
+        setRoutes(synthesizedRoutes);
+        setActiveRouteId(synthesizedRoutes[0].id);
+        setMapError(
+          "Live AI descriptions are unavailable right now — safety scores below are computed directly from real location and report data instead.",
+        );
       } else {
         setMapError(
-          "Live route map loaded, but the AI safety analysis didn't return usable route options. Try again in a moment.",
+          "Live route map loaded, but no route options could be generated. Try again in a moment.",
         );
       }
     } catch (e) {
@@ -281,11 +338,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
     if (!selectedLocationTarget || !originReady) return;
     if (lastAutoRoutedTargetId.current === selectedLocationTarget.id) return;
     lastAutoRoutedTargetId.current = selectedLocationTarget.id;
-
-    // Tell the parent this target has been used, so it clears its own
-    // selectedRouteTarget state and this exact auto-route can't fire again
-    // just from remounting (e.g. leaving and returning to this tab).
-    onTargetConsumed?.();
 
     setDestination(selectedLocationTarget.name);
 
