@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import crypto from 'crypto';
+import fs from 'fs';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
@@ -10,7 +11,11 @@ dotenv.config({ quiet: true });
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-app.use(express.json({ limit: '10mb' }));
+// Bumped from 10mb to 50mb: encrypted evidence recordings (video/audio,
+// base64-encoded — which inflates size ~33%) are sent as JSON bodies to
+// /api/evidence/upload below, and 10mb was too small for more than a few
+// seconds of footage.
+app.use(express.json({ limit: '50mb' }));
 
 // Helper to initialize Gemini SDK safely
 function getGeminiClient() {
@@ -513,6 +518,69 @@ app.post('/api/live-location/:id/stop', (req, res) => {
   session.active = false;
   session.updatedAt = Date.now();
   return res.json(session);
+});
+
+// Encrypted Evidence Vault storage
+//
+// The client (useEvidenceRecorder.ts) encrypts every recording with
+// AES-256-GCM in the browser via Web Crypto BEFORE it ever reaches this
+// endpoint — this server only ever stores ciphertext + an IV + a SHA-256
+// hash of the plaintext (for later tamper-proofing). It has no way to
+// decrypt what it stores; only whoever holds the client-side vault key
+// (currently: the same device, via localStorage — see evidenceCrypto.ts
+// for the noted limitation) can.
+const EVIDENCE_DIR = path.join(process.cwd(), 'evidence-storage');
+if (!fs.existsSync(EVIDENCE_DIR)) {
+  fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
+}
+
+interface EvidenceRecord {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  sha256Hash: string;
+  capturedAt: string;
+  lat: number | null;
+  lng: number | null;
+  storedAt: string;
+}
+
+// In-memory index — resets on server restart, same caveat as the
+// liveLocationSessions map above. Swap for a real database/table (and
+// swap the fs.writeFileSync calls below for S3/GCS/Azure Blob) before
+// this goes to production.
+const evidenceIndex = new Map<string, EvidenceRecord>();
+
+app.post('/api/evidence/upload', (req, res) => {
+  try {
+    const { fileName, mimeType, encryptedBase64, ivBase64, sha256Hash, capturedAt, lat, lng } = req.body || {};
+
+    if (typeof encryptedBase64 !== 'string' || typeof ivBase64 !== 'string' || typeof sha256Hash !== 'string') {
+      return res.status(400).json({ error: 'encryptedBase64, ivBase64 and sha256Hash (strings) are required' });
+    }
+
+    const id = crypto.randomUUID();
+    const cipherBuffer = Buffer.from(encryptedBase64, 'base64');
+    fs.writeFileSync(path.join(EVIDENCE_DIR, `${id}.enc`), cipherBuffer);
+    fs.writeFileSync(path.join(EVIDENCE_DIR, `${id}.iv`), Buffer.from(ivBase64, 'base64'));
+
+    const record: EvidenceRecord = {
+      id,
+      fileName: typeof fileName === 'string' ? fileName : `evidence-${id}.enc`,
+      mimeType: typeof mimeType === 'string' ? mimeType : 'video/webm',
+      sha256Hash,
+      capturedAt: typeof capturedAt === 'string' ? capturedAt : new Date().toISOString(),
+      lat: typeof lat === 'number' ? lat : null,
+      lng: typeof lng === 'number' ? lng : null,
+      storedAt: new Date().toISOString(),
+    };
+    evidenceIndex.set(id, record);
+
+    return res.status(201).json({ id, sizeBytes: cipherBuffer.length, storedAt: record.storedAt });
+  } catch (error: any) {
+    console.error('Error in evidence upload:', error);
+    return res.status(500).json({ error: error.message || 'Evidence upload failed' });
+  }
 });
 
 async function startServer() {

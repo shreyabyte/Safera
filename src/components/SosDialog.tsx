@@ -25,6 +25,11 @@ interface SosDialogProps {
   onAddContact: (contact: EmergencyContact) => void;
   onDeleteContact: (id: string) => void;
   isOffline: boolean;
+  /** Starts encrypted evidence recording — called the moment SOS dispatch fires. */
+  onStartRecording: () => void;
+  /** Stops, encrypts, and uploads whatever was captured. */
+  onStopRecording: () => void;
+  isRecording: boolean;
 }
 
 export const SosDialog: React.FC<SosDialogProps> = ({
@@ -34,6 +39,9 @@ export const SosDialog: React.FC<SosDialogProps> = ({
   onAddContact,
   onDeleteContact,
   isOffline,
+  onStartRecording,
+  onStopRecording,
+  isRecording,
 }) => {
   const [dispatchStage, setDispatchStage] = useState<'idle' | 'countdown' | 'dispatched'>('idle');
   const [cancelSeconds, setCancelSeconds] = useState(5);
@@ -88,6 +96,13 @@ export const SosDialog: React.FC<SosDialogProps> = ({
     setLiveSessionId(null);
     setSmsLinks([]);
 
+    // Start encrypted evidence recording immediately — don't wait for the
+    // 5s cancel countdown to finish. If this is a real emergency, every
+    // second of footage from the moment SOS is pressed matters; if it's a
+    // false alarm, handleCancelSos below stops and still saves whatever
+    // was captured.
+    onStartRecording();
+
     // Runs in parallel with the 5s cancel countdown, so real data is ready
     // the moment dispatch actually fires — not fetched after the fact.
     setLocationPending(true);
@@ -133,6 +148,11 @@ export const SosDialog: React.FC<SosDialogProps> = ({
     if (liveSessionId) {
       fetch(`/api/live-location/${liveSessionId}/stop`, { method: 'POST' }).catch(() => {});
     }
+    // Nothing was actually dispatched to contacts yet during the countdown,
+    // so treat cancel the same way as ending a false-alarm recording: stop,
+    // encrypt, and save whatever few seconds were captured rather than
+    // discarding it outright.
+    onStopRecording();
   };
 
   if (!isOpen) return null;
@@ -190,6 +210,21 @@ export const SosDialog: React.FC<SosDialogProps> = ({
               </div>
               <h3 className="text-base font-extrabold text-[#2F2B2D]">SOS Alert Ready</h3>
             </div>
+
+            {isRecording && (
+              <div className="flex items-center justify-between gap-2 bg-white border border-[#E9D8DE] rounded-xl px-3 py-2">
+                <span className="flex items-center gap-1.5 text-xs font-bold text-[#A70F43]">
+                  <span className="w-2 h-2 rounded-full bg-[#A70F43] animate-pulse" />
+                  Encrypted evidence recording in progress
+                </span>
+                <button
+                  onClick={onStopRecording}
+                  className="text-[10px] font-bold text-[#A70F43] hover:underline"
+                >
+                  Stop & Save to Vault
+                </button>
+              </div>
+            )}
 
             {coords ? (
               <div className="flex items-center gap-1.5 text-xs text-[#7B7280] justify-center">
