@@ -11,9 +11,6 @@ interface MovementDetectionProps {
   gForce: number;
   /** Lets the simulator buttons here reuse the exact same countdown flow as a real detection. */
   triggerSafetyCheck: (reason: string) => void;
-  /** iOS Safari gates devicemotion behind a user-gesture permission prompt. */
-  motionPermission: 'unknown' | 'granted' | 'denied' | 'unsupported';
-  requestMotionPermission: () => Promise<void>;
 }
 
 export const MovementDetection: React.FC<MovementDetectionProps> = ({
@@ -22,20 +19,7 @@ export const MovementDetection: React.FC<MovementDetectionProps> = ({
   onTriggerSos,
   gForce,
   triggerSafetyCheck,
-  motionPermission,
-  requestMotionPermission,
 }) => {
-  const handleToggleEnabled = async () => {
-    const turningOn = !settings.isEnabled;
-    // On iOS this MUST run synchronously inside the click handler, or the
-    // permission prompt silently fails — so we request it before flipping
-    // the setting, using this exact click as the required user gesture.
-    if (turningOn && motionPermission === 'unknown') {
-      await requestMotionPermission();
-    }
-    onUpdateSettings({ ...settings, isEnabled: turningOn });
-  };
-
   return (
     <div className="space-y-6">
       {/* Top Banner Control Header */}
@@ -60,7 +44,7 @@ export const MovementDetection: React.FC<MovementDetectionProps> = ({
 
           {/* Master Toggle Button */}
           <button
-            onClick={handleToggleEnabled}
+            onClick={() => onUpdateSettings({ ...settings, isEnabled: !settings.isEnabled })}
             className={`px-5 py-2.5 rounded-full text-xs font-semibold border transition-all flex items-center space-x-2 shadow-xs ${
               settings.isEnabled
                 ? 'bg-[#A70F43] text-white border-[#8D0D39]'
@@ -71,16 +55,6 @@ export const MovementDetection: React.FC<MovementDetectionProps> = ({
             <span>AI Sensor Detection: {settings.isEnabled ? 'ACTIVE' : 'DISABLED'}</span>
           </button>
         </div>
-
-        {motionPermission === 'denied' && (
-          <div className="flex items-start gap-2 p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800">
-            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-            <span>
-              Motion sensor access was denied, so fall/shake/drag detection can't run on this device. On iPhone,
-              enable it under Settings → Safari → Motion &amp; Orientation Access, then reload and try again.
-            </span>
-          </div>
-        )}
       </div>
 
       {/* Sensor Config & Live G-Force Panel */}
