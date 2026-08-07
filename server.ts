@@ -39,121 +39,172 @@ app.get('/api/health', (req, res) => {
 });
 
 // API Route 1: Risk Assessment Prediction
+//
+// Produces a genuine structured safety report, not a one-line guess. Every
+// field the client already has locally about this location — safetyScore,
+// lightingStars, cctvPercent, policeDistanceMeters, recentSosCount,
+// accessibility, and the nearest safe resource — is accepted here and fed
+// into the prompt, so Gemini is reasoning over the same real numbers the
+// rest of the app (the Gaussian-kernel risk grid in hotspot.ts) already
+// computed, instead of guessing from just a place name and FIR count.
 app.post('/api/ai/predict-risk', async (req, res) => {
   try {
     const {
       locationName,
-      area,
       timeOfDay,
       weather,
       crowdDensity,
       firCount,
       recentReports,
-      // Real fields that were previously never sent to the AI at all —
-      // without these, Gemini was reasoning with almost no actual context.
+      // Real per-location signals the client already has — optional so this
+      // endpoint still degrades gracefully for older callers.
+      safetyScore,
       lightingStars,
       cctvPercent,
       policeDistanceMeters,
-      seedSafetyScore,
-      // 'osm-live' locations are real places pulled from OpenStreetMap
-      // (see src/utils/overpass.ts) with no crime-history data available —
-      // the prompt below must not let the model invent FIR/CCTV numbers
-      // for these, only reason from real distance/type/time/weather.
-      dataSource,
-      placeType,
+      recentSosCount,
+      wheelchairAccessible,
+      policeBoothOnSite,
+      nearestSafeResource, // { name: string, distanceMeters: number, reason: string } | null
     } = req.body;
 
+    const hasRealSignals = typeof safetyScore === 'number';
+
     const ai = getGeminiClient();
-    const isLiveOsmPlace = dataSource === 'osm-live';
+
+    // Builds the same structured report shape from real numbers alone,
+    // no LLM involved — used both when GEMINI_API_KEY is unset AND as the
+    // last-resort object if Gemini's response fails to parse.
+    const buildDataOnlyReport = () => {
+      const score = hasRealSignals
+        ? safetyScore
+        : Math.max(35, 90 - (firCount || 0) * 8 - (timeOfDay === 'Night' || timeOfDay === 'Late Night' ? 20 : 0));
+
+      const riskLevel =
+        score >= 76 ? 'Safe' : score >= 51 ? 'Moderate Caution' : score >= 26 ? 'High Risk' : 'Extreme Caution';
+
+      const lightingNote = hasRealSignals
+        ? lightingStars >= 4
+          ? 'Well-lit with strong streetlight coverage.'
+          : lightingStars >= 2
+          ? 'Moderately lit, with some dark patches after dusk.'
+          : 'Poorly lit, with minimal working streetlights.'
+        : `Assume ${timeOfDay === 'Day' ? 'good' : 'limited'} visibility — no logged lighting data for this spot.`;
+      const lightingScore = hasRealSignals ? Math.round((lightingStars / 5) * 100) : timeOfDay === 'Day' ? 70 : 40;
+
+      const cctvNote = hasRealSignals
+        ? cctvPercent >= 80
+          ? 'Extensive CCTV coverage.'
+          : cctvPercent >= 40
+          ? 'Partial CCTV coverage — some blind spots likely.'
+          : 'Very limited CCTV coverage.'
+        : 'No logged CCTV data for this spot.';
+      const cctvScore = hasRealSignals ? cctvPercent : 50;
+
+      const policeNote = hasRealSignals
+        ? policeDistanceMeters <= 300
+          ? `Active police presence just ${policeDistanceMeters}m away.`
+          : policeDistanceMeters <= 700
+          ? `Nearest police booth is ${policeDistanceMeters}m away.`
+          : `No nearby police booth — closest is ${policeDistanceMeters}m away.`
+        : 'No logged police-distance data for this spot.';
+      const policeScore = hasRealSignals ? Math.max(0, 100 - Math.round(policeDistanceMeters / 15)) : 50;
+
+      const incidentNote = hasRealSignals
+        ? `${firCount || 0} FIR incident(s) and ${recentSosCount || 0} recent SOS trigger(s) logged nearby.`
+        : `${firCount || 0} incident(s) reported in the surrounding area.`;
+      const incidentScore = Math.max(0, 100 - (firCount || 0) * 10 - (recentSosCount || 0) * 15);
+
+      const crowdNote = `${crowdDensity || 'Moderate'} pedestrian traffic${
+        timeOfDay === 'Night' || timeOfDay === 'Late Night' ? ', which thins out further after dark.' : '.'
+      }`;
+
+      const summary = `${locationName || 'This location'} is currently rated "${riskLevel}" (${score}/100) at ${
+        timeOfDay || 'this time'
+      }. ${lightingNote} ${policeNote}${
+        !ai ? ' (Live AI analysis is temporarily unavailable — this report is generated directly from logged location data.)' : ''
+      }`;
+
+      const timeContext =
+        timeOfDay === 'Night' || timeOfDay === 'Late Night'
+          ? `After dark, lighting and police proximity matter more than during the day — ${
+              hasRealSignals && lightingStars <= 2 ? 'and this spot is a known weak point on lighting.' : 'factor that in before walking alone.'
+            }`
+          : `During ${timeOfDay || 'the day'}, visibility and foot traffic are the biggest safety factors here, not lighting.`;
+
+      const recommendedActions = [
+        score < 51
+          ? 'Avoid this area alone, especially after dark — take a longer but better-lit route if possible.'
+          : 'Standard precautions apply — stay aware of your surroundings.',
+        wheelchairAccessible === false
+          ? 'No confirmed step-free access here — plan an alternate path if that matters for your trip.'
+          : 'Stick to the main walkway rather than side lanes or shortcuts.',
+        'Share your live location with a trusted contact before entering this zone.',
+      ];
+
+      const nearbySafeResourceNote = nearestSafeResource
+        ? `${nearestSafeResource.name} is the closest safe resource${
+            nearestSafeResource.reason === 'police-booth' ? ' with an active police booth' : ''
+          }, about ${
+            nearestSafeResource.distanceMeters >= 1000
+              ? `${(nearestSafeResource.distanceMeters / 1000).toFixed(1)} km`
+              : `${Math.round(nearestSafeResource.distanceMeters)} m`
+          } away.`
+        : 'No verified safe resource is logged near this location yet.';
+
+      return {
+        safetyScore: score,
+        riskLevel,
+        summary,
+        riskBreakdown: [
+          { factor: 'Lighting', score: lightingScore, note: lightingNote },
+          { factor: 'CCTV Coverage', score: cctvScore, note: cctvNote },
+          { factor: 'Police Proximity', score: policeScore, note: policeNote },
+          { factor: 'Incident History', score: incidentScore, note: incidentNote },
+          { factor: 'Crowd & Foot Traffic', score: crowdDensity === 'High' ? 75 : crowdDensity === 'Low' ? 35 : 55, note: crowdNote },
+        ],
+        timeContext,
+        recommendedActions,
+        nearbySafeResourceNote,
+      };
+    };
 
     if (!ai) {
-      // No GEMINI_API_KEY configured — structured, locally-computed fallback
-      // that still fills out a full report shape (not just a flat summary),
-      // so the UI never renders an obviously thinner result depending on
-      // whether the key happens to be set.
-      const fallbackScore = isLiveOsmPlace
-        ? Math.max(40, Number(seedSafetyScore) || 65)
-        : Math.max(35, 90 - (firCount || 0) * 8 - (timeOfDay === 'Night' || timeOfDay === 'Late Night' ? 20 : 0));
-      const fallbackRisk = fallbackScore >= 75 ? 'Safe' : fallbackScore >= 55 ? 'Moderate Caution' : 'Extreme Caution';
-
-      return res.json({
-        safetyScore: fallbackScore,
-        riskLevel: fallbackRisk,
-        summary: `Analysis for ${locationName || 'Selected Area'}: computed from local data (${crowdDensity || 'Moderate'} crowd density, ${timeOfDay || 'current'} conditions). Live AI analysis is unavailable right now.`,
-        factors: isLiveOsmPlace
-          ? [`Real distance to nearest police: ${policeDistanceMeters ?? 'unknown'}m`, `Place type: ${placeType || 'unknown'}`, `Crime/CCTV history: not publicly available for this real location`]
-          : [
-              `Lighting Quality: ${timeOfDay === 'Night' || timeOfDay === 'Late Night' ? 'Limited in side lanes' : 'Good visibility'}`,
-              `CCTV & Police Presence: ${firCount > 2 ? 'Active monitoring recommended' : 'Regular police patrol area'}`,
-              `Crowd & Traffic: ${crowdDensity || 'Moderate'} pedestrian traffic`,
-            ],
-        safetyTips: [
-          'Stick to main well-lit thoroughfares.',
-          'Keep your live GPS tracking active in Safera SOS mode.',
-          'Identify nearby safe hubs (24/7 pharmacies, police booths).',
-        ],
-        reportSections: {
-          overview: `${locationName || 'This location'} is rated "${fallbackRisk}" based on ${isLiveOsmPlace ? 'real proximity to mapped emergency infrastructure' : 'logged incident and infrastructure data'}. Live AI analysis is temporarily unavailable, so this report is generated directly from known data rather than model reasoning.`,
-          keyFindings: isLiveOsmPlace
-            ? [
-                { title: 'Real place type', detail: `This is a mapped ${placeType || 'location'} on OpenStreetMap.`, severity: 'Low' },
-                { title: 'Nearest police', detail: `${policeDistanceMeters ?? 'Unknown'}m away.`, severity: policeDistanceMeters && policeDistanceMeters > 700 ? 'Medium' : 'Low' },
-                { title: 'Crime history', detail: 'Not available from public map data for this real-world location.', severity: 'Medium' },
-              ]
-            : [
-                { title: 'Lighting', detail: `${lightingStars ?? '—'}/5 star rating on record.`, severity: (lightingStars ?? 3) >= 4 ? 'Low' : 'Medium' },
-                { title: 'CCTV Coverage', detail: `${cctvPercent ?? '—'}% coverage on record.`, severity: (cctvPercent ?? 50) >= 70 ? 'Low' : 'Medium' },
-                { title: 'Incident History', detail: `${firCount ?? 0} FIR(s) logged for this area.`, severity: (firCount ?? 0) > 2 ? 'High' : 'Low' },
-              ],
-          recommendedActions: [
-            'Stick to main well-lit thoroughfares.',
-            'Keep your live GPS tracking active in Safera SOS mode.',
-            'Identify nearby safe hubs before proceeding.',
-          ],
-          watchPoints: [
-            timeOfDay === 'Night' || timeOfDay === 'Late Night'
-              ? 'Visibility and foot traffic drop significantly after dark — reassess if the area feels unfamiliar.'
-              : 'Conditions can change quickly if crowd density drops later in the day.',
-            'If anything feels wrong, trigger Safera SOS and share your live location immediately.',
-          ],
-        },
-      });
+      return res.json(buildDataOnlyReport());
     }
 
-    const contextBlock = isLiveOsmPlace
-      ? `This is a REAL location fetched live from OpenStreetMap (not a seeded demo entry). It is a "${placeType || 'unknown type'}" located ${policeDistanceMeters ?? 'an unknown distance'}m from the nearest mapped police station.
-      IMPORTANT: No crime history, FIR records, or CCTV coverage data exists for this location from any public source. Do NOT invent or estimate these numbers. Reason only from: real place type, real distance to police, time of day, weather, and any community reports provided below. Your keyFindings and overview must be honest that detailed incident-history data isn't available here.`
-      : `Local Incident/FIR Count: ${firCount ?? 1}
-      Lighting Rating: ${lightingStars ?? 'unknown'}/5 stars
-      CCTV Coverage: ${cctvPercent ?? 'unknown'}%
-      Nearest Police Distance: ${policeDistanceMeters ?? 'unknown'}m
-      Baseline Safety Score on Record: ${seedSafetyScore ?? 'unknown'}/100`;
+    const prompt = `You are a personal-safety risk analyst. Write a genuinely detailed, specific safety report for a pedestrian at this exact location — not generic advice. Ground every claim in the real data below; do not invent statistics that aren't given.
 
-    const prompt = `You are a personal safety analyst producing a genuine, specific risk report for a woman navigating this location alone. Do not write generic filler — every finding must reference the actual details given below.
-
-Location: "${locationName || 'Urban Corridor'}"${area ? `, ${area}` : ''}
+Location: "${locationName || 'Urban Corridor'}"
 Time of day: ${timeOfDay || 'Evening'}
 Weather: ${weather || 'Clear'}
 Crowd Density: ${crowdDensity || 'Moderate'}
-${contextBlock}
-Recent Community Reports: ${JSON.stringify(recentReports && recentReports.length > 0 ? recentReports : ['No recent community reports for this location.'])}
+Logged FIR/incident count: ${firCount ?? 'unknown'}
+Recent SOS triggers nearby: ${recentSosCount ?? 'unknown'}
+Overall computed safety score for this spot: ${hasRealSignals ? `${safetyScore}/100` : 'not available'}
+Lighting rating: ${typeof lightingStars === 'number' ? `${lightingStars}/5 stars` : 'not available'}
+CCTV coverage: ${typeof cctvPercent === 'number' ? `${cctvPercent}%` : 'not available'}
+Distance to nearest police booth: ${typeof policeDistanceMeters === 'number' ? `${policeDistanceMeters}m` : 'not available'}
+Wheelchair / step-free access confirmed: ${wheelchairAccessible === undefined ? 'unknown' : wheelchairAccessible ? 'yes' : 'no'}
+Police booth on site: ${policeBoothOnSite === undefined ? 'unknown' : policeBoothOnSite ? 'yes' : 'no'}
+Nearest verified safe resource: ${nearestSafeResource ? `${nearestSafeResource.name}, ${Math.round(nearestSafeResource.distanceMeters)}m away (${nearestSafeResource.reason})` : 'none logged'}
+Recent community reports: ${JSON.stringify(recentReports || [])}
 
-Produce a full structured report as JSON ONLY (no markdown, no prose outside the JSON) matching exactly this shape:
+Return a clean JSON object ONLY, matching this exact schema:
 {
-  "safetyScore": <number 0-100, 100 = safest>,
+  "safetyScore": <number 0-100, 100 = safest — should track the computed score above if given>,
   "riskLevel": "<Safe | Moderate Caution | High Risk | Extreme Caution>",
-  "summary": "<1-2 sentence executive summary>",
-  "factors": ["<factor 1>", "<factor 2>", "<factor 3>"],
-  "safetyTips": ["<tip 1>", "<tip 2>", "<tip 3>"],
-  "reportSections": {
-    "overview": "<3-4 sentence honest, specific overview referencing the actual time/weather/crowd/lighting/distance context given above — not generic boilerplate>",
-    "keyFindings": [
-      { "title": "<short label, e.g. 'Lighting', 'Police Proximity', 'Time-of-Day Risk'>", "detail": "<1-2 sentences, specific to the real numbers/context given>", "severity": "<Low | Medium | High>" }
-      // produce 4 to 6 distinct findings, each covering a different real signal from the context above (lighting OR real distance, crowd, time, weather, community reports, incident history if available) — do not repeat the same signal twice, do not label them "Signal 1/2/3"
-    ],
-    "recommendedActions": ["<3 to 5 concrete, specific actions someone could actually take right now — not generic 'stay alert' filler unless paired with something specific>"],
-    "watchPoints": ["<2 to 4 specific things to stay alert for, grounded in the actual context — e.g. a specific time window, a specific nearby feature, a specific report>"]
-  }
+  "summary": "<2-3 sentence executive summary citing specific numbers from above (not vague generalities)>",
+  "riskBreakdown": [
+    { "factor": "Lighting", "score": <0-100>, "note": "<one specific sentence>" },
+    { "factor": "CCTV Coverage", "score": <0-100>, "note": "<one specific sentence>" },
+    { "factor": "Police Proximity", "score": <0-100>, "note": "<one specific sentence>" },
+    { "factor": "Incident History", "score": <0-100>, "note": "<one specific sentence citing FIR/SOS counts>" },
+    { "factor": "Crowd & Foot Traffic", "score": <0-100>, "note": "<one specific sentence>" }
+  ],
+  "timeContext": "<1-2 sentences on how THIS specific time of day changes the risk here>",
+  "recommendedActions": ["<specific action 1>", "<specific action 2>", "<specific action 3>"],
+  "nearbySafeResourceNote": "<1 sentence pointing to the nearest safe resource given above, or noting none is logged>"
 }`;
 
     const response = await ai.models.generateContent({
@@ -164,7 +215,17 @@ Produce a full structured report as JSON ONLY (no markdown, no prose outside the
       }
     });
 
-    const parsed = JSON.parse(response.text || '{}');
+    let parsed: any;
+    try {
+      parsed = JSON.parse(response.text || '{}');
+      if (typeof parsed.safetyScore !== 'number' || typeof parsed.summary !== 'string' || !parsed.summary.trim()) {
+        throw new Error('Gemini response missing required fields');
+      }
+    } catch (parseErr) {
+      console.error('predict-risk: Gemini response malformed, using data-only report instead', parseErr);
+      parsed = buildDataOnlyReport();
+    }
+
     return res.json(parsed);
   } catch (error: any) {
     console.error('Error in predict-risk:', error);
@@ -288,7 +349,14 @@ app.post('/api/ai/legal-rights', async (req, res) => {
           'Send your GuardIA live tracking link and recorded evidence to trusted contacts.',
           'Ask for a copy of the written FIR or complaint receipt free of cost.'
         ],
-        legalStatutes: ['CrPC Section 154 (Zero FIR)', 'Article 39A (Free Legal Aid)', 'POSH Act Section 9']
+        legalStatutes: ['CrPC Section 154 (Zero FIR)', 'Article 39A (Free Legal Aid)', 'POSH Act Section 9'],
+        // Real, verifiable government sources for these specific statutes —
+        // not generated by the model, so they stay accurate even when the
+        // Gemini key isn't configured.
+        sources: [
+          { label: 'NCW — Laws Relating to Women (booklet)', url: 'https://cdn.ncw.gov.in/wp-content/uploads/2023/01/Booklet-Laws-relating-to-Women_0.pdf' },
+          { label: 'India Code — Code of Criminal Procedure', url: 'https://www.indiacode.nic.in/handle/123456789/1611' },
+        ],
       });
     }
 
@@ -303,8 +371,13 @@ app.post('/api/ai/legal-rights', async (req, res) => {
       "summary": "1-2 sentence overview of user's core legal standing",
       "keyRights": ["Clear point 1", "Clear point 2", "Clear point 3"],
       "actionSteps": ["Step 1", "Step 2", "Step 3"],
-      "legalStatutes": ["Statute/Act 1", "Statute/Act 2"]
-    }`;
+      "legalStatutes": ["Statute/Act 1", "Statute/Act 2"],
+      "sources": [
+        { "label": "Name of the official source (e.g. an NCW booklet, an India Code Act page, a WCD scheme page)", "url": "A real, verifiable URL to an official Indian government source (ncw.gov.in, indiacode.nic.in, wcd.gov.in, cybercrime.gov.in) that supports the statutes cited above" }
+      ]
+    }
+
+    IMPORTANT: only include a source in "sources" if you are confident the URL is real and correct. If you are not certain of an exact URL, name the official body and document instead (e.g. "National Commission for Women — Laws Relating to Women booklet") and omit the "url" field for that entry rather than inventing a link.`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.6-flash',
