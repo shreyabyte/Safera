@@ -11,6 +11,7 @@ export const LegalRightsAdvisor: React.FC<LegalRightsAdvisorProps> = ({ articles
   const [userQuery, setUserQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [isLoadingAi, setIsLoadingAi] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
   const [aiLegalAdvice, setAiLegalAdvice] = useState<{
     topic: string;
     summary: string;
@@ -22,6 +23,7 @@ export const LegalRightsAdvisor: React.FC<LegalRightsAdvisorProps> = ({ articles
   const handleConsultAiLegalRights = async () => {
     if (!userQuery.trim()) return;
     setIsLoadingAi(true);
+    setAiError(null);
     try {
       const res = await fetch('/api/ai/legal-rights', {
         method: 'POST',
@@ -31,10 +33,12 @@ export const LegalRightsAdvisor: React.FC<LegalRightsAdvisorProps> = ({ articles
           category: selectedCategory !== 'All' ? selectedCategory : 'Emergency Safety Rights',
         }),
       });
+      if (!res.ok) throw new Error(`Server responded ${res.status}`);
       const data = await res.json();
       setAiLegalAdvice(data);
     } catch (err) {
       console.error(err);
+      setAiError('Could not reach the AI legal advisor right now. Please check your connection and try again.');
     } finally {
       setIsLoadingAi(false);
     }
@@ -124,6 +128,12 @@ export const LegalRightsAdvisor: React.FC<LegalRightsAdvisorProps> = ({ articles
       </div>
 
       {/* AI Advice Output Card */}
+      {aiError && (
+        <div className="bg-white border-2 border-amber-400 rounded-2xl p-4 shadow-md text-xs text-amber-800 flex items-center gap-2">
+          <HelpCircle className="w-4 h-4 shrink-0" />
+          <span>{aiError}</span>
+        </div>
+      )}
       {aiLegalAdvice && (
         <div className="bg-white border-2 border-[#A70F43] rounded-2xl p-4 shadow-md space-y-3">
           <div className="flex items-center justify-between border-b border-[#E9D8DE] pb-2">
