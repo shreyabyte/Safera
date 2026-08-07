@@ -14,11 +14,6 @@ import {
   Bot,
   Shield,
   Cloud,
-  Radio,
-  Scale,
-  Users,
-  Phone,
-  Volume2,
   Info,
   X,
 } from 'lucide-react';
@@ -225,7 +220,9 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
         body: JSON.stringify({
           locationName: loc.name,
           timeOfDay,
-          weather: 'Clear Night (24 deg C)',
+          weather: liveWeatherDesc !== 'Loading...' && liveWeatherDesc !== 'Unavailable'
+            ? `${liveWeatherDesc}${liveTemp !== '--°' ? ` (${liveTemp})` : ''}`
+            : 'Clear',
           crowdDensity: loc.crowdDensity,
           firCount: loc.firCount,
           recentReports: reports.filter((r) => r.locationName.includes(loc.name.split(' ')[0])).map((r) => r.description),
@@ -477,30 +474,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-2.5 overflow-x-auto py-2 no-scrollbar">
-          <span className="text-xs font-semibold text-[#825D6B] shrink-0 mr-1">
-            Section:
-          </span>
-          {[
-            { id: 'sensors', label: 'Sensors', icon: Radio },
-            { id: 'legal', label: 'Legal Advisor', icon: Scale },
-            { id: 'community', label: 'Community', icon: Users },
-            { id: 'toolkit', label: 'Offline Toolkit', icon: Phone },
-            { id: 'companion', label: 'AI Safety Companion', icon: Volume2 },
-          ].map((chip) => {
-            const Icon = chip.icon;
-            return (
-              <button
-                key={chip.id}
-                onClick={() => setActiveTab?.(chip.id)}
-                className="px-4 py-2 rounded-full bg-white text-[#31141E] border border-[#F2E5DE] hover:bg-[#FAF4EE] hover:border-[#8A1E41] hover:text-[#8A1E41] text-xs font-semibold flex items-center gap-2 transition-all shrink-0 shadow-2xs cursor-pointer active:scale-95"
-              >
-                <Icon className="w-3.5 h-3.5 text-[#8A1E41]" />
-                <span>{chip.label}</span>
-              </button>
-            );
-          })}
-        </div>
       </div>
 
       <div className="bg-white border border-[#F2E5DE] rounded-[28px] p-5 shadow-[0_4px_20px_rgba(49,20,30,0.02)] space-y-4">

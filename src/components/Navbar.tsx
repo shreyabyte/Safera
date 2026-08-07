@@ -129,6 +129,32 @@ export const Navbar: React.FC<NavbarProps> = ({
             <GuardIaLogo size="md" variant="icon" showText={false} />
           </div>
         </div>
+
+        {/* Secondary Feature Launcher — Sensors, Legal Advisor, Community,
+            Offline Toolkit & AI Companion each only live behind this row;
+            it was previously defined but never rendered, making those five
+            tabs unreachable from the UI. */}
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pt-4 -mx-1 px-1">
+          {quickFeatureChips.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id)}
+                className={`shrink-0 flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold border transition-all cursor-pointer ${
+                  isActive
+                    ? 'bg-[#8A1E41] text-white border-[#6D1533] shadow-xs'
+                    : 'bg-white text-[#825D6B] border-[#F2E5DE] hover:text-[#31141E] hover:border-[#8A1E41]'
+                }`}
+                id={`quick-chip-${item.id}`}
+              >
+                <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-[#8A1E41]'}`} />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </div>
       </header>
 
       {/* Floating Bottom Navigation Dock (Always Visible) */}
