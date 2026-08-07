@@ -49,7 +49,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
   const [timeOfDay, setTimeOfDay] = useState<"Day" | "Evening" | "Late Night">(
     "Late Night",
   );
-  const [transportMode, setTransportMode] = useState<
+  const [transportMode, setTransportMode] = useState
     "Walking" | "Wheelchair / Assistive" | "Solo Transit"
   >("Walking");
   const [accessibilityNeeds, setAccessibilityNeeds] = useState(
@@ -67,17 +67,17 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
   const [routeSteps, setRouteSteps] = useState<RouteStep[]>([]);
   const [mapError, setMapError] = useState<string | null>(null);
 
-  // Becomes true once the origin-detection effect below has settled — via
-  // real GPS, a fallback address, or a denied-permission message. Auto-route
-  // generation waits for this so it never fires with a half-resolved origin.
+  // Whether the initial geolocation attempt (success or fallback) has
+  // resolved yet. The auto-routing effect waits on this so it doesn't fire
+  // with a stale/empty origin before we know where the user actually is.
   const [originReady, setOriginReady] = useState(false);
-
-  // Tracks which selectedLocationTarget we've already auto-routed for, so
-  // switching tabs and back doesn't repeatedly re-trigger the same route.
+  // Guards the auto-routing effect against re-firing for the same target
+  // (e.g. on unrelated re-renders) once it has already been routed.
   const lastAutoRoutedTargetId = useRef<string | null>(null);
 
-  // Shared route-generation logic used by both the manual "Re-calculate"
-  // button and the automatic "Route there" trigger below.
+  // Core route-generation pipeline, shared by the manual "Re-calculate"
+  // button and by the auto-run effect that fires when a target location is
+  // selected via "Route there" elsewhere in the app.
   const runRouteGeneration = async (
     originPlace: GeocodedPlace,
     destinationPlace: GeocodedPlace,
@@ -96,6 +96,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       const primaryRoute = realRoutes[0];
       setRoutePath(primaryRoute.coordinates);
       setRouteSteps(primaryRoute.steps);
+      // Be honest about how many real distinct paths OSRM actually found.
       console.log(
         `OSRM found ${realRoutes.length} distinct route(s) for this trip.`,
       );
@@ -111,17 +112,19 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           accessibilityNeeds,
         }),
       });
-
-      if (!res.ok) {
-        throw new Error(`analyze-route responded ${res.status}`);
-      }
       const data = await res.json();
 
       // Maps this screen's local time-of-day options onto the risk grid's
       // own TimeOfDay type so the route scorer and the Live Safety Grid on
       // the Map tab always agree on what "Night" means.
       const gridTimeOfDay: GridTimeOfDay =
-        timeOfDay === "Evening" ? "Dusk" : timeOfDay === "Late Night" ? "Late Night" : timeOfDay === "Day" ? "Day" : "Night";
+        timeOfDay === "Evening"
+          ? "Dusk"
+          : timeOfDay === "Late Night"
+          ? "Late Night"
+          : timeOfDay === "Day"
+          ? "Day"
+          : "Night";
 
       // Score every real OSRM path against actual location + report data —
       // same idea as danger-index safe-routing research (score path
@@ -129,9 +132,15 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       // guess), computed here via the same kernel model as the Live Safety
       // Grid. This numeric score and these risk segments are now grounded
       // in real geodata regardless of whether the AI call above succeeds.
-      const assessedRoutes = realRoutes.map((r) => scoreRoutePath(r.coordinates, locations, reports, gridTimeOfDay));
+      const assessedRoutes = realRoutes.map((r) =>
+        scoreRoutePath(r.coordinates, locations, reports, gridTimeOfDay),
+      );
 
       if (data.routes && Array.isArray(data.routes) && data.routes.length > 0) {
+        // Only keep as many cards as we have REAL distinct paths for.
+        // If OSRM only found 1 real path, show only 1 card — with the
+        // top (safest-framed) scoring — rather than faking 3 identical
+        // "alternatives."
         const usableCount = Math.min(data.routes.length, realRoutes.length);
         const updatedRoutes: RouteOption[] = data.routes
           .slice(0, usableCount)
@@ -168,27 +177,31 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
         // cards entirely from real OSRM geometry + the computed risk
         // scores above, so the feature still works with zero AI dependency
         // instead of failing silently.
-        const synthesizedRoutes: RouteOption[] = realRoutes.map((r, idx) => {
-          const assessment = assessedRoutes[idx];
-          const rank = [...assessedRoutes].sort((a, b) => b.pathSafetyScore - a.pathSafetyScore).indexOf(assessment);
-          return {
-            id: `route-computed-${idx}`,
-            name: rank === 0 ? "Recommended Safe Route" : `Alternate Route ${idx + 1}`,
-            tag: rank === 0 ? "Safest (computed)" : "Alternate (computed)",
-            distance: formatDistance(r.distanceMeters),
-            estimatedTime: formatDuration(r.durationSeconds),
-            safetyScore: assessment.pathSafetyScore,
-            lightingPercent: assessment.lightingPercent,
-            accessibilityScore: assessment.accessibilityPercent,
-            highlights: [
-              `${assessment.cctvPercent}% average CCTV coverage along this path`,
-              assessment.policeBoothNearby
-                ? "Passes within 400m of an active police booth"
-                : "No police booth directly on this path",
-            ],
-            riskSegments: assessment.riskSegments,
-          };
-        }).sort((a, b) => b.safetyScore - a.safetyScore);
+        const synthesizedRoutes: RouteOption[] = realRoutes
+          .map((r, idx) => {
+            const assessment = assessedRoutes[idx];
+            const rank = [...assessedRoutes]
+              .sort((a, b) => b.pathSafetyScore - a.pathSafetyScore)
+              .indexOf(assessment);
+            return {
+              id: `route-computed-${idx}`,
+              name: rank === 0 ? "Recommended Safe Route" : `Alternate Route ${idx + 1}`,
+              tag: rank === 0 ? "Safest (computed)" : "Alternate (computed)",
+              distance: formatDistance(r.distanceMeters),
+              estimatedTime: formatDuration(r.durationSeconds),
+              safetyScore: assessment.pathSafetyScore,
+              lightingPercent: assessment.lightingPercent,
+              accessibilityScore: assessment.accessibilityPercent,
+              highlights: [
+                `${assessment.cctvPercent}% average CCTV coverage along this path`,
+                assessment.policeBoothNearby
+                  ? "Passes within 400m of an active police booth"
+                  : "No police booth directly on this path",
+              ],
+              riskSegments: assessment.riskSegments,
+            };
+          })
+          .sort((a, b) => b.safetyScore - a.safetyScore);
 
         setRoutes(synthesizedRoutes);
         setActiveRouteId(synthesizedRoutes[0].id);
@@ -211,36 +224,27 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
   };
 
   const handleGenerateRoutes = async () => {
-    setIsLoading(true);
     setMapError(null);
-    try {
-      let originPlace = originCoords;
-      let destinationPlace = destinationCoords;
+    let originPlace = originCoords;
+    let destinationPlace = destinationCoords;
 
-      if (!originPlace || originPlace.displayName !== origin) {
-        originPlace = await geocodePlace(origin, { countryCode: "in" });
-      }
-      if (!destinationPlace || destinationPlace.displayName !== destination) {
-        destinationPlace = await geocodePlace(destination, {
-          countryCode: "in",
-        });
-      }
-
-      if (!originPlace || !destinationPlace) {
-        setMapError(
-          "Could not find one of those locations. Try a more specific address.",
-        );
-        setIsLoading(false);
-        return;
-      }
-
-      setIsLoading(false); // runRouteGeneration will set it back to true
-      await runRouteGeneration(originPlace, destinationPlace);
-    } catch (e) {
-      console.error(e);
-      setMapError("Could not resolve one of those locations. Please try again.");
-      setIsLoading(false);
+    if (!originPlace || originPlace.displayName !== origin) {
+      originPlace = await geocodePlace(origin, { countryCode: "in" });
     }
+    if (!destinationPlace || destinationPlace.displayName !== destination) {
+      destinationPlace = await geocodePlace(destination, {
+        countryCode: "in",
+      });
+    }
+
+    if (!originPlace || !destinationPlace) {
+      setMapError(
+        "Could not find one of those locations. Try a more specific address.",
+      );
+      return;
+    }
+
+    await runRouteGeneration(originPlace, destinationPlace);
   };
 
   const handleUseCurrentLocation = () => {
@@ -253,6 +257,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       (pos) => {
         const { latitude, longitude } = pos.coords;
 
+        // Show something immediately, even before reverse-geocoding resolves.
         setOrigin(`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
         setOriginCoords({
           lat: latitude,
@@ -260,6 +265,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           displayName: "Current Location",
         });
 
+        // Then try to upgrade it to a readable address.
         fetch(
           `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`,
         )
@@ -276,6 +282,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           })
           .catch((err) => {
             console.error("Reverse geocode failed:", err);
+            // Not fatal — raw coordinates are already set above.
           });
       },
       (err) => {
@@ -290,9 +297,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
     );
   };
 
-  // Auto-detect the user's current location as the starting point on mount.
-  // Marks originReady in every branch (success, fallback, and denied) so the
-  // auto-route effect below always knows when it's safe to proceed.
+  // --- Resolve a starting origin once on mount ---
   useEffect(() => {
     if (!navigator.geolocation) {
       setOrigin("Connaught Place, New Delhi, India");
@@ -324,7 +329,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
         setOrigin("Connaught Place, New Delhi, India");
         setOriginReady(true);
       },
-      { enableHighAccuracy: true, timeout: 8000 }
+      { enableHighAccuracy: true, timeout: 8000 },
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -485,13 +490,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
         </div>
       </div>
 
-      {isLoading && (
-        <div className="flex items-center gap-2 p-4 rounded-[18px] bg-[#FFF0F3] border border-[#EFE6E1] text-[#A70F43] text-xs font-semibold">
-          <Sparkles className="w-4 h-4 animate-pulse" />
-          <span>Calculating your safest route automatically...</span>
-        </div>
-      )}
-
       {mapError && (
         <div className="flex items-start gap-2 p-4 rounded-[18px] bg-amber-50 border border-amber-200 text-amber-800 text-xs">
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -530,8 +528,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           </p>
           <p className="text-xs text-[#6E676A]">
             Enter a start and destination above, then click "Re-calculate Safest
-            Routes" to see live options — or pick "Route there" from the Map
-            tab to have this happen automatically.
+            Routes" to see live options.
           </p>
         </div>
       ) : (
@@ -655,56 +652,3 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
                     isSelected
                       ? "bg-[#A70F43] hover:bg-[#8D0D39] text-white shadow-xs"
                       : "bg-[#FEFCFA] hover:bg-[#FFF0F3] text-[#221F20] border border-[#EFE6E1]"
-                  }`}
-                >
-                  <Navigation className="w-4 h-4" />
-                  <span>Start Live Guided Walk</span>
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Selected Route Turn-By-Turn Preview */}
-      {selectedRoute && (
-        <div className="bg-white border border-[#EFE6E1] rounded-[24px] p-6 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-4">
-          <div className="flex items-center justify-between border-b border-[#EFE6E1] pb-3">
-            <h3 className="text-base font-bold text-[#221F20] flex items-center gap-2">
-              <Footprints className="w-4 h-4 text-[#A70F43]" />
-              Turn-By-Turn Analysis: {selectedRoute.name}
-            </h3>
-            <span className="text-xs text-[#6E676A]">Live GPS Sync</span>
-          </div>
-
-          <div className="space-y-3 text-xs">
-            {routeSteps.length === 0 ? (
-              <p className="text-[#6E676A] text-xs">
-                Generate a route to see live turn-by-turn steps.
-              </p>
-            ) : (
-              routeSteps.map((step, idx) => (
-                <div
-                  key={idx}
-                  className="flex items-start space-x-3 p-3.5 rounded-[18px] bg-[#FEFCFA] border border-[#EFE6E1]"
-                >
-                  <div className="w-6 h-6 rounded-full bg-[#A70F43] text-white flex items-center justify-center font-bold shrink-0 text-xs">
-                    {idx + 1}
-                  </div>
-                  <div>
-                    <div className="font-semibold text-[#221F20]">
-                      {step.instruction}
-                    </div>
-                    <p className="text-[#6E676A] text-xs mt-0.5">
-                      {formatDistance(step.distanceMeters)}
-                    </p>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
