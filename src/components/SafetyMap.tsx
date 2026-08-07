@@ -19,6 +19,8 @@ import {
   Users,
   Phone,
   Volume2,
+  Info,
+  X,
 } from 'lucide-react';
 
 import { LiveLocationShareModal } from './LiveLocationShareModal';
@@ -31,7 +33,6 @@ interface SafetyMapProps {
   setActiveTab?: (tab: string) => void;
 }
 
-// Translates Open-Meteo's numeric WMO weather codes into a short label.
 const getWeatherLabel = (code: number): string => {
   if (code === 0) return 'Clear';
   if ([1, 2, 3].includes(code)) return 'Cloudy';
@@ -43,8 +44,6 @@ const getWeatherLabel = (code: number): string => {
   return 'Clear';
 };
 
-// fetch() with a hard timeout, so a slow/hanging network call can never
-// leave the UI stuck loading forever — it just fails fast and falls back.
 const fetchWithTimeout = async (
   url: string,
   options: RequestInit,
@@ -80,7 +79,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
   const [showAccessibilityOverlay, setShowAccessibilityOverlay] = useState(false);
   const [showPoliceBoothsOnly] = useState(false);
 
-  // --- Live time (always safe: pure client-side clock, nothing to fail) ---
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
 
   useEffect(() => {
@@ -88,20 +86,16 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // --- Live location + weather (best-effort, independent of the score) ---
   const [liveLocationLabel, setLiveLocationLabel] = useState<string>('Locating…');
   const [liveTemp, setLiveTemp] = useState<string>('--°');
   const [liveWeatherDesc, setLiveWeatherDesc] = useState<string>('Loading...');
 
-  // --- Live AI safety score for the user's real position ---
-  // status starts 'loading' and can only ever move to one of: 'live'
-  // (real score arrived), 'fallback' (score call failed, use demo data),
-  // or 'denied' (no geolocation permission/support). The hero card always
-  // has something valid to render for every one of these states.
   const [liveScoreStatus, setLiveScoreStatus] = useState<
     'loading' | 'live' | 'fallback' | 'denied'
   >('loading');
   const [liveScoreData, setLiveScoreData] = useState<LiveRiskData | null>(null);
+
+  const [isMethodologyOpen, setIsMethodologyOpen] = useState(false);
 
   useEffect(() => {
     if (!navigator.geolocation) {
@@ -116,7 +110,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
         const { latitude, longitude } = pos.coords;
         let weatherDescLocal = 'Clear';
 
-        // Weather — best-effort, never blocks the score call.
         try {
           const weatherRes = await fetchWithTimeout(
             `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code`,
@@ -133,7 +126,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           setLiveWeatherDesc('Unavailable');
         }
 
-        // Reverse geocode — best-effort, falls back to a generic label.
         let readableName = 'Your current area';
         try {
           const geoRes = await fetchWithTimeout(
@@ -156,10 +148,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           setLiveLocationLabel(readableName);
         }
 
-        // Live safety score for the real position — the critical path.
-        // Any failure here (network, bad response shape, non-200) falls
-        // back to the existing demo location's score rather than breaking
-        // the hero card.
         try {
           const hour = new Date().getHours();
           const approxTimeOfDay =
@@ -214,15 +202,11 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
     );
   }, []);
 
-  // What the hero card actually renders: live score once it arrives,
-  // otherwise the existing demo location data — so the card is always
-  // populated, never blank, even before the live call resolves.
   const displaySafetyScore =
     liveScoreStatus === 'live' && liveScoreData ? liveScoreData.safetyScore : selectedLocation.safetyScore;
   const displayRiskLabel =
     liveScoreStatus === 'live' && liveScoreData ? liveScoreData.riskLevel : 'Safe zone';
 
-  // AI Risk State
   const [isAnalyzingAi, setIsAnalyzingAi] = useState(false);
   const [aiAnalysisResult, setAiAnalysisResult] = useState<{
     safetyScore: number;
@@ -278,11 +262,9 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
   return (
     <>
     <div className="space-y-6">
-      {/* 1. HERO SAFETY SCORE CARD (Matches Screenshot) */}
       <div className="relative bg-gradient-to-br from-[#F8D7CD] via-[#EFA6B6] to-[#CF748B] border border-[#F2E5DE] rounded-[32px] p-6 sm:p-8 shadow-[0_12px_36px_rgba(207,116,139,0.18)] text-[#31141E] overflow-hidden">
         <div className="relative z-10 flex flex-col justify-between space-y-6">
           <div className="flex items-start justify-between gap-4">
-            {/* Left: Score Details */}
             <div className="space-y-1">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-[11px] sm:text-xs font-bold tracking-widest text-[#6B2F42] uppercase">
@@ -303,6 +285,15 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
                     Reference: {selectedLocation.name}
                   </span>
                 )}
+                <button
+                  type="button"
+                  onClick={() => setIsMethodologyOpen((v) => !v)}
+                  aria-expanded={isMethodologyOpen}
+                  aria-label="How this score is calculated"
+                  className="w-4 h-4 rounded-full bg-white/50 hover:bg-white/80 text-[#6B2F42] flex items-center justify-center transition-colors cursor-pointer"
+                >
+                  <Info className="w-3 h-3" />
+                </button>
               </div>
               <div className="flex items-baseline gap-1.5 pt-1">
                 <span className="text-5xl sm:text-6xl font-bold text-[#31141E] tracking-tight leading-none">
@@ -313,7 +304,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
                 </span>
               </div>
 
-              {/* Status Badge */}
               <div className="pt-2">
                 <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/60 backdrop-blur-xs text-[#31141E] text-xs font-semibold shadow-2xs">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
@@ -322,10 +312,8 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
               </div>
             </div>
 
-            {/* Right: Circular Progress Ring matching SS */}
             <div className="relative w-20 h-20 sm:w-24 sm:h-24 shrink-0 flex items-center justify-center">
               <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
-                {/* Background Ring */}
                 <circle
                   cx="50"
                   cy="50"
@@ -334,7 +322,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
                   strokeWidth="10"
                   fill="transparent"
                 />
-                {/* Score Arc */}
                 <circle
                   cx="50"
                   cy="50"
@@ -350,7 +337,52 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
             </div>
           </div>
 
-          {/* Bottom Row: Pill Tags matching SS */}
+          {isMethodologyOpen && (
+            <div className="bg-white/70 backdrop-blur-xs border border-white/60 rounded-[20px] p-4 space-y-2.5 text-xs text-[#31141E] shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="font-bold uppercase tracking-wide text-[10px] text-[#6B2F42]">
+                  How this score is calculated
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsMethodologyOpen(false)}
+                  aria-label="Close"
+                  className="text-[#6B2F42] hover:text-[#31141E] cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <ul className="space-y-1.5">
+                <li className="flex items-start gap-1.5">
+                  <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0"></span>
+                  <span>
+                    <strong>Real, live:</strong> your GPS position, current weather, and time of day
+                    {liveScoreStatus === 'live' ? ' - currently in use for the score above.' : '.'}
+                  </span>
+                </li>
+                <li className="flex items-start gap-1.5">
+                  <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0"></span>
+                  <span>
+                    <strong>Real, live:</strong> Gemini AI synthesizes the above context into the score and summary in real time.
+                  </span>
+                </li>
+                <li className="flex items-start gap-1.5">
+                  <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"></span>
+                  <span>
+                    <strong>Live, but thin today:</strong> community incident reports feed into scoring - real and working, just early, since the app doesn't have many reports yet.
+                  </span>
+                </li>
+                <li className="flex items-start gap-1.5">
+                  <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-[#A7194B] shrink-0"></span>
+                  <span>
+                    <strong>Seed data (not yet live):</strong> historical incident/CCTV baseline is a curated demo dataset standing in for real open data - e.g. NCRB or state police open-data portals — which we'd integrate for production use.
+                  </span>
+                </li>
+              </ul>
+            </div>
+          )}
+
           <div className="flex flex-wrap items-center gap-2.5 pt-1">
             <div className="bg-white/60 backdrop-blur-xs text-[#31141E] text-xs font-semibold px-3.5 py-2 rounded-full flex items-center gap-1.5 shadow-2xs">
               <MapPin className="w-3.5 h-3.5 text-[#8A1E41]" />
@@ -370,14 +402,12 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
         </div>
       </div>
 
-      {/* 2. QUICK ACTIONS GRID (Matches Screenshot) */}
       <div className="space-y-3">
         <h3 className="text-lg sm:text-xl font-bold text-[#31141E]">
           Quick actions
         </h3>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-          {/* Card 1: Safe Navigation */}
           <div
             onClick={() => onSelectLocationForRoute(selectedLocation)}
             className="bg-white rounded-[26px] p-4 sm:p-5 shadow-[0_4px_20px_rgba(49,20,30,0.03)] border border-[#F2E5DE] flex items-center gap-4 hover:shadow-md transition-all cursor-pointer group"
@@ -395,7 +425,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
             </div>
           </div>
 
-          {/* Card 2: Share Live Location */}
           <div
             onClick={() => setIsLiveLocationModalOpen(true)}
             className="bg-white rounded-[26px] p-4 sm:p-5 shadow-[0_4px_20px_rgba(49,20,30,0.03)] border border-[#F2E5DE] flex items-center gap-4 hover:shadow-md transition-all cursor-pointer group"
@@ -413,7 +442,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
             </div>
           </div>
 
-          {/* Card 3: AI Safety Companion */}
           <div
             onClick={() => setActiveTab?.('companion')}
             className="bg-white rounded-[26px] p-4 sm:p-5 shadow-[0_4px_20px_rgba(49,20,30,0.03)] border border-[#F2E5DE] flex items-center gap-4 hover:shadow-md transition-all cursor-pointer group"
@@ -431,9 +459,7 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
             </div>
           </div>
 
-        
-            {/* Card 4: Offline Emergency Toolkit */}
-          <div
+            <div
             onClick={() => setActiveTab?.('toolkit')}
             className="bg-white rounded-[26px] p-4 sm:p-5 shadow-[0_4px_20px_rgba(49,20,30,0.03)] border border-[#F2E5DE] flex items-center gap-4 hover:shadow-md transition-all cursor-pointer group"
           >
@@ -451,7 +477,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           </div>
         </div>
 
-        {/* Horizontal Scroll Feature Chips Section */}
         <div className="flex items-center gap-2 sm:gap-2.5 overflow-x-auto py-2 no-scrollbar">
           <span className="text-xs font-semibold text-[#825D6B] shrink-0 mr-1">
             Section:
@@ -478,7 +503,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
         </div>
       </div>
 
-      {/* 3. FEATURE CONTROLS & FILTER CHIPS */}
       <div className="bg-white border border-[#F2E5DE] rounded-[28px] p-5 shadow-[0_4px_20px_rgba(49,20,30,0.02)] space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center space-x-2">
@@ -488,7 +512,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
             </span>
           </div>
 
-          {/* Time Context Group */}
           <div className="flex items-center bg-[#FAF4EE] border border-[#F2E5DE] rounded-full p-1 shadow-2xs">
             {(['Day', 'Dusk', 'Night', 'Late Night'] as const).map((mode) => (
               <button
@@ -508,7 +531,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           </div>
         </div>
 
-        {/* Layer Toggles & Report Action */}
         <div className="flex flex-wrap items-center gap-2.5 pt-1 border-t border-[#F2E5DE]">
           <button
             onClick={() => setShowHeatmap(!showHeatmap)}
@@ -544,9 +566,7 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
         </div>
       </div>
 
-      {/* Main Map Grid Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-7">
-        {/* Map Display Canvas */}
         <div className="lg:col-span-7 bg-white border border-[#EFE6E1] rounded-[28px] p-6 shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-5">
           <div className="flex items-center justify-between pb-3 border-b border-[#EFE6E1]">
             <h3 className="text-[20px] font-semibold text-[#221F20] flex items-center gap-2.5">
@@ -556,12 +576,9 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
             <span className="text-xs font-medium text-[#6E676A]">Context: {timeOfDay} Mode</span>
           </div>
 
-          {/* Interactive Map Viewport */}
           <div className="relative bg-[#FCF7F1]/40 border border-[#EFE6E1] rounded-[22px] min-h-[440px] overflow-hidden flex flex-col justify-between p-5">
-            {/* Grid Pattern */}
             <div className="absolute inset-0 opacity-15 bg-[radial-gradient(#A7194B_1px,transparent_1px)] [background-size:18px_18px]"></div>
 
-            {/* Heatmap Glows */}
             {showHeatmap && (
               <>
                 <div className="absolute top-1/4 left-1/3 w-36 h-36 rounded-full bg-rose-500/15 blur-2xl animate-pulse"></div>
@@ -569,7 +586,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
               </>
             )}
 
-            {/* Location Cards Grid */}
             <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 gap-3.5 my-auto">
               {filteredLocations.map((loc) => {
                 const isSelected = selectedLocation.id === loc.id;
@@ -632,7 +648,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           </div>
         </div>
 
-        {/* Selected Location Inspector */}
         <div className="lg:col-span-5 bg-white border border-[#EFE6E1] rounded-[28px] p-6.5 shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-5">
           <div className="border-b border-[#EFE6E1] pb-3.5">
             <span className="text-xs font-medium text-[#6E676A]">
@@ -654,7 +669,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
             </div>
           </div>
 
-          {/* Run AI Risk Predictor */}
           <button
             onClick={() => handleRunAiRiskPredictor(selectedLocation)}
             disabled={isAnalyzingAi}
