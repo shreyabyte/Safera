@@ -16,17 +16,6 @@ export interface MotionSafetyState {
   triggerSafetyCheck: (reason: string) => void;
   /** Skip the countdown and dispatch SOS immediately. */
   dispatchNow: () => void;
-  /**
-   * iOS 13+ (Safari) requires an explicit user-gesture permission prompt
-   * before `devicemotion` events fire at all — without this, sensor
-   * detection silently does nothing on iPhone even with settings "enabled".
-   * 'granted' | 'unsupported' mean events should work; 'unknown' means we
-   * haven't asked yet (call requestMotionPermission from a click handler);
-   * 'denied' means the user said no and we should say so in the UI.
-   */
-  motionPermission: 'unknown' | 'granted' | 'denied' | 'unsupported';
-  /** Must be called from inside a real user click/tap handler on iOS. */
-  requestMotionPermission: () => Promise<void>;
 }
 
 /**
@@ -45,42 +34,6 @@ export function useMotionSafetyDetection(
   const [activeCountdown, setActiveCountdown] = useState<number | null>(null);
   const [activeAlarmType, setActiveAlarmType] = useState<string | null>(null);
   const [gForce, setGForce] = useState(1.0);
-  const [motionPermission, setMotionPermission] = useState<
-    'unknown' | 'granted' | 'denied' | 'unsupported'
-  >('unknown');
-
-  // Most browsers (Android, desktop) don't gate devicemotion behind a
-  // permission prompt at all — only iOS 13+ Safari does. Detect that once
-  // so the UI doesn't ask for permission it'll never need.
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.DeviceMotionEvent) {
-      setMotionPermission('unsupported');
-      return;
-    }
-    if (typeof (DeviceMotionEvent as any).requestPermission !== 'function') {
-      setMotionPermission('granted');
-    }
-  }, []);
-
-  const requestMotionPermission = async () => {
-    if (typeof window === 'undefined' || !window.DeviceMotionEvent) {
-      setMotionPermission('unsupported');
-      return;
-    }
-    if (typeof (DeviceMotionEvent as any).requestPermission !== 'function') {
-      setMotionPermission('granted');
-      return;
-    }
-    try {
-      // Must be called synchronously from a user gesture (e.g. a button's
-      // onClick) on iOS Safari, or it silently rejects.
-      const result = await (DeviceMotionEvent as any).requestPermission();
-      setMotionPermission(result === 'granted' ? 'granted' : 'denied');
-    } catch (err) {
-      console.error('DeviceMotionEvent.requestPermission failed', err);
-      setMotionPermission('denied');
-    }
-  };
 
   // Guards against re-triggering a new countdown while one's already running,
   // and lets the countdown effect below always see the latest onTriggerSos
@@ -112,9 +65,6 @@ export function useMotionSafetyDetection(
   // running regardless of which tab the person is viewing.
   useEffect(() => {
     if (!settings.isEnabled) return;
-    // On iOS, listening without permission granted is a silent no-op —
-    // don't attach the listener until we know it'll actually receive events.
-    if (motionPermission === 'denied' || motionPermission === 'unknown') return;
 
     const handleDeviceMotion = (event: DeviceMotionEvent) => {
       const acc = event.accelerationIncludingGravity;
@@ -140,7 +90,7 @@ export function useMotionSafetyDetection(
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.isEnabled, settings.fallDetection, settings.shakingDetection, motionPermission]);
+  }, [settings.isEnabled, settings.fallDetection, settings.shakingDetection]);
 
   // Countdown ticker — expiry dispatches SOS automatically.
   useEffect(() => {
@@ -159,14 +109,5 @@ export function useMotionSafetyDetection(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCountdown]);
 
-  return {
-    activeCountdown,
-    activeAlarmType,
-    gForce,
-    confirmSafe,
-    triggerSafetyCheck,
-    dispatchNow,
-    motionPermission,
-    requestMotionPermission,
-  };
+  return { activeCountdown, activeAlarmType, gForce, confirmSafe, triggerSafetyCheck, dispatchNow };
 }

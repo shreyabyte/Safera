@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 
 import { RouteOption, SafetyLocation } from "../types";
 import { GuardIaLogo } from "./GuardIaLogo";
@@ -30,20 +30,12 @@ import {
 interface RouteGeneratorProps {
   locations: SafetyLocation[];
   selectedLocationTarget?: SafetyLocation;
-  /**
-   * Called once selectedLocationTarget has been consumed by the auto-route
-   * effect below. Lets the parent clear its own state so the target doesn't
-   * outlive this trip and silently re-trigger a route next time this
-   * component mounts (e.g. navigating back to the Routes tab normally).
-   */
-  onTargetConsumed?: () => void;
   onStartNavigation: (route: RouteOption) => void;
 }
 
 export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
   locations,
   selectedLocationTarget,
-  onTargetConsumed,
   onStartNavigation,
 }) => {
   const [origin, setOrigin] = useState("");
@@ -71,88 +63,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
   const [routeSteps, setRouteSteps] = useState<RouteStep[]>([]);
   const [mapError, setMapError] = useState<string | null>(null);
 
-  // Becomes true once the origin-detection effect below has settled — via
-  // real GPS, a fallback address, or a denied-permission message. Auto-route
-  // generation waits for this so it never fires with a half-resolved origin.
-  const [originReady, setOriginReady] = useState(false);
-
-  // Tracks which selectedLocationTarget we've already auto-routed for, so
-  // switching tabs and back doesn't repeatedly re-trigger the same route.
-  const lastAutoRoutedTargetId = useRef<string | null>(null);
-
-  // Shared route-generation logic used by both the manual "Re-calculate"
-  // button and the automatic "Route there" trigger below.
-  const runRouteGeneration = async (
-    originPlace: GeocodedPlace,
-    destinationPlace: GeocodedPlace,
-  ) => {
-    setIsLoading(true);
-    setMapError(null);
-    try {
-      setOriginCoords(originPlace);
-      setDestinationCoords(destinationPlace);
-
-      const realRoutes = await getWalkingRoute(
-        { lat: originPlace.lat, lng: originPlace.lng },
-        { lat: destinationPlace.lat, lng: destinationPlace.lng },
-        { alternatives: true },
-      );
-      const primaryRoute = realRoutes[0];
-      setRoutePath(primaryRoute.coordinates);
-      setRouteSteps(primaryRoute.steps);
-      console.log(
-        `OSRM found ${realRoutes.length} distinct route(s) for this trip.`,
-      );
-
-      const res = await fetch("/api/ai/analyze-route", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          origin: originPlace.displayName,
-          destination: destinationPlace.displayName,
-          timeOfDay,
-          transportMode,
-          accessibilityNeeds,
-        }),
-      });
-
-      if (!res.ok) {
-        throw new Error(`analyze-route responded ${res.status}`);
-      }
-      const data = await res.json();
-
-      if (data.routes && Array.isArray(data.routes) && data.routes.length > 0) {
-        const usableCount = Math.min(data.routes.length, realRoutes.length);
-        const updatedRoutes = data.routes
-          .slice(0, usableCount)
-          .map((r: RouteOption, idx: number) => ({
-            ...r,
-            distance: formatDistance(realRoutes[idx].distanceMeters),
-            estimatedTime: formatDuration(realRoutes[idx].durationSeconds),
-          }));
-        setRoutes(updatedRoutes);
-        setActiveRouteId(updatedRoutes[0].id);
-
-        if (updatedRoutes.length === 1) {
-          setMapError(
-            "Only one distinct walking path was found between these points — showing a single verified route rather than fabricated alternatives.",
-          );
-        }
-      } else {
-        setMapError(
-          "Live route map loaded, but the AI safety analysis didn't return usable route options. Try again in a moment.",
-        );
-      }
-    } catch (e) {
-      console.error(e);
-      setMapError(
-        "Something went wrong fetching live map data. Please try again.",
-      );
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const handleGenerateRoutes = async () => {
     setIsLoading(true);
     setMapError(null);
@@ -176,16 +86,66 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
         setIsLoading(false);
         return;
       }
+      setOriginCoords(originPlace);
+      setDestinationCoords(destinationPlace);
 
-      setIsLoading(false); // runRouteGeneration will set it back to true
-      await runRouteGeneration(originPlace, destinationPlace);
+      const realRoutes = await getWalkingRoute(
+        { lat: originPlace.lat, lng: originPlace.lng },
+        { lat: destinationPlace.lat, lng: destinationPlace.lng },
+        { alternatives: true },
+      );
+      const primaryRoute = realRoutes[0];
+      setRoutePath(primaryRoute.coordinates);
+      setRouteSteps(primaryRoute.steps);
+      // Be honest about how many real distinct paths OSRM actually found.
+      console.log(
+        `OSRM found ${realRoutes.length} distinct route(s) for this trip.`,
+      );
+
+      const res = await fetch("/api/ai/analyze-route", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          origin: originPlace.displayName,
+          destination: destinationPlace.displayName,
+          timeOfDay,
+          transportMode,
+          accessibilityNeeds,
+        }),
+      });
+      const data = await res.json();
+
+      if (data.routes && Array.isArray(data.routes)) {
+        // Only keep as many cards as we have REAL distinct paths for.
+        // If OSRM only found 1 real path, show only 1 card — with the
+        // top (safest-framed) scoring — rather than faking 3 identical
+        // "alternatives."
+        const usableCount = Math.min(data.routes.length, realRoutes.length);
+        const updatedRoutes = data.routes
+          .slice(0, usableCount)
+          .map((r: RouteOption, idx: number) => ({
+            ...r,
+            distance: formatDistance(realRoutes[idx].distanceMeters),
+            estimatedTime: formatDuration(realRoutes[idx].durationSeconds),
+          }));
+        setRoutes(updatedRoutes);
+        setActiveRouteId(updatedRoutes[0].id);
+
+        if (updatedRoutes.length === 1) {
+          setMapError(
+            "Only one distinct walking path was found between these points — showing a single verified route rather than fabricated alternatives.",
+          );
+        }
+      }
     } catch (e) {
       console.error(e);
-      setMapError("Could not resolve one of those locations. Please try again.");
+      setMapError(
+        "Something went wrong fetching live map data. Please try again.",
+      );
+    } finally {
       setIsLoading(false);
     }
   };
-
   const handleUseCurrentLocation = () => {
     if (!navigator.geolocation) {
       setMapError("Geolocation is not supported by this browser.");
@@ -196,6 +156,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       (pos) => {
         const { latitude, longitude } = pos.coords;
 
+        // Show something immediately, even before reverse-geocoding resolves.
         setOrigin(`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
         setOriginCoords({
           lat: latitude,
@@ -203,6 +164,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           displayName: "Current Location",
         });
 
+        // Then try to upgrade it to a readable address.
         fetch(
           `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`,
         )
@@ -219,6 +181,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           })
           .catch((err) => {
             console.error("Reverse geocode failed:", err);
+            // Not fatal — raw coordinates are already set above.
           });
       },
       (err) => {
@@ -232,88 +195,38 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       { enableHighAccuracy: true, timeout: 10000 },
     );
   };
-
-  // Auto-detect the user's current location as the starting point on mount.
-  // Marks originReady in every branch (success, fallback, and denied) so the
-  // auto-route effect below always knows when it's safe to proceed.
   useEffect(() => {
-    if (!navigator.geolocation) {
+  if (!navigator.geolocation) {
+    setOrigin("Connaught Place, New Delhi, India");
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const { latitude, longitude } = pos.coords;
+      setOrigin(`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
+      setOriginCoords({ lat: latitude, lng: longitude, displayName: "Current Location" });
+
+      fetch(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data?.display_name) {
+            setOrigin(data.display_name);
+            setOriginCoords({ lat: latitude, lng: longitude, displayName: data.display_name });
+          }
+        })
+        .catch(() => {
+          // Reverse geocode failed — raw coordinates from above are still fine.
+        });
+    },
+    (err) => {
+      console.warn("Geolocation unavailable, using fallback:", err.message);
       setOrigin("Connaught Place, New Delhi, India");
-      setOriginReady(true);
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const { latitude, longitude } = pos.coords;
-        setOrigin(`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
-        setOriginCoords({ lat: latitude, lng: longitude, displayName: "Current Location" });
-        setOriginReady(true);
-
-        fetch(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`)
-          .then((res) => res.json())
-          .then((data) => {
-            if (data?.display_name) {
-              setOrigin(data.display_name);
-              setOriginCoords({ lat: latitude, lng: longitude, displayName: data.display_name });
-            }
-          })
-          .catch(() => {
-            // Reverse geocode failed — raw coordinates from above are still fine.
-          });
-      },
-      (err) => {
-        console.warn("Geolocation unavailable, using fallback:", err.message);
-        setOrigin("Connaught Place, New Delhi, India");
-        setOriginReady(true);
-      },
-      { enableHighAccuracy: true, timeout: 8000 }
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // --- Auto-run everything the moment a target is selected via "Route there" ---
-  // Runs whenever selectedLocationTarget changes (not just on first mount),
-  // waits for the origin to be ready, and calls the exact same pipeline the
-  // manual button uses — so distance, ETA, safety scoring, and turn-by-turn
-  // steps all populate automatically with zero extra clicks.
-  useEffect(() => {
-    if (!selectedLocationTarget || !originReady) return;
-    if (lastAutoRoutedTargetId.current === selectedLocationTarget.id) return;
-    lastAutoRoutedTargetId.current = selectedLocationTarget.id;
-
-    // Tell the parent this target has been used, so it clears its own
-    // selectedRouteTarget state and this exact auto-route can't fire again
-    // just from remounting (e.g. leaving and returning to this tab).
-    onTargetConsumed?.();
-
-    setDestination(selectedLocationTarget.name);
-
-    // SafetyLocation already carries real lat/lng — no need to geocode the
-    // destination text at all, which also sidesteps Nominatim occasionally
-    // failing to resolve a location's display name.
-    const destinationPlace: GeocodedPlace = {
-      lat: selectedLocationTarget.lat,
-      lng: selectedLocationTarget.lng,
-      displayName: selectedLocationTarget.name,
-    };
-
-    (async () => {
-      let resolvedOrigin = originCoords;
-      if (!resolvedOrigin) {
-        resolvedOrigin = await geocodePlace(origin, { countryCode: "in" });
-      }
-      if (!resolvedOrigin) {
-        setMapError(
-          "Could not detect your starting location automatically. Set it manually above and click Re-calculate.",
-        );
-        return;
-      }
-      await runRouteGeneration(resolvedOrigin, destinationPlace);
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedLocationTarget, originReady]);
-
+    },
+    { enableHighAccuracy: true, timeout: 8000 }
+  );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
   const selectedRoute = routes.find((r) => r.id === activeRouteId) || routes[0];
 
   return (
@@ -433,13 +346,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
         </div>
       </div>
 
-      {isLoading && (
-        <div className="flex items-center gap-2 p-4 rounded-[18px] bg-[#FFF0F3] border border-[#EFE6E1] text-[#A70F43] text-xs font-semibold">
-          <Sparkles className="w-4 h-4 animate-pulse" />
-          <span>Calculating your safest route automatically...</span>
-        </div>
-      )}
-
       {mapError && (
         <div className="flex items-start gap-2 p-4 rounded-[18px] bg-amber-50 border border-amber-200 text-amber-800 text-xs">
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -478,8 +384,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           </p>
           <p className="text-xs text-[#6E676A]">
             Enter a start and destination above, then click "Re-calculate Safest
-            Routes" to see live options — or pick "Route there" from the Map
-            tab to have this happen automatically.
+            Routes" to see live options.
           </p>
         </div>
       ) : (

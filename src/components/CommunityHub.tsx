@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { CommunityReport } from '../types';
 import { GuardIaLogo } from './GuardIaLogo';
-import { getBestEffortLocation } from '../utils/sos';
 import {
   Shield,
   ThumbsUp,
@@ -15,11 +14,6 @@ import {
   Award,
   X,
 } from 'lucide-react';
-
-// Fallback pin only used when the browser has never given us a GPS fix
-// (permission denied, no geolocation support, etc.) — better than silently
-// mislabeling every report as being at the exact same spot.
-const FALLBACK_COORDS = { lat: 28.6139, lng: 77.209 };
 
 interface CommunityHubProps {
   reports: CommunityReport[];
@@ -37,23 +31,16 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const [category, setCategory] = useState<CommunityReport['category']>('Poor Lighting');
   const [description, setDescription] = useState('');
   const [filterCategory, setFilterCategory] = useState<string>('All');
-  const [isLocating, setIsLocating] = useState(false);
 
-  const handleSubmitNewReport = async (e: React.FormEvent) => {
+  const handleSubmitNewReport = (e: React.FormEvent) => {
     e.preventDefault();
     if (!locationName || !description) return;
-
-    setIsLocating(true);
-    // Tag the report with wherever the reporter actually is right now,
-    // rather than a single fixed coordinate for every report.
-    const fix = await getBestEffortLocation();
-    setIsLocating(false);
 
     const newReport: CommunityReport = {
       id: `rep-${Date.now()}`,
       locationName,
-      lat: fix?.lat ?? FALLBACK_COORDS.lat,
-      lng: fix?.lng ?? FALLBACK_COORDS.lng,
+      lat: 28.6139,
+      lng: 77.209,
       category,
       description,
       timestamp: 'Just now',
@@ -193,10 +180,9 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={isLocating}
-                  className="px-4 py-1.5 rounded-xl bg-[#A70F43] hover:bg-[#8D0D39] text-white font-bold border border-[#8D0D39] shadow-sm disabled:opacity-60"
+                  className="px-4 py-1.5 rounded-xl bg-[#A70F43] hover:bg-[#8D0D39] text-white font-bold border border-[#8D0D39] shadow-sm"
                 >
-                  {isLocating ? 'Tagging location…' : 'Submit Report'}
+                  Submit Report
                 </button>
               </div>
             </form>
