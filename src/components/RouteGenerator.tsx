@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 import { RouteOption, SafetyLocation } from "../types";
 import { GuardIaLogo } from "./GuardIaLogo";
@@ -12,6 +12,8 @@ import {
   LatLng,
   RouteStep,
 } from "../lib/routing";
+import { scoreRoutePath, TimeOfDay as GridTimeOfDay } from "../utils/hotspot";
+import { CommunityReport } from "../types";
 
 import {
   Shield,
@@ -29,12 +31,14 @@ import {
 
 interface RouteGeneratorProps {
   locations: SafetyLocation[];
+  reports: CommunityReport[];
   selectedLocationTarget?: SafetyLocation;
   onStartNavigation: (route: RouteOption) => void;
 }
 
 export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
   locations,
+  reports,
   selectedLocationTarget,
   onStartNavigation,
 }) => {
@@ -63,29 +67,16 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
   const [routeSteps, setRouteSteps] = useState<RouteStep[]>([]);
   const [mapError, setMapError] = useState<string | null>(null);
 
-  const handleGenerateRoutes = async () => {
+  const [originReady, setOriginReady] = useState(false);
+  const lastAutoRoutedTargetId = useRef<string | null>(null);
+
+  const runRouteGeneration = async (
+    originPlace: GeocodedPlace,
+    destinationPlace: GeocodedPlace,
+  ) => {
     setIsLoading(true);
     setMapError(null);
     try {
-      let originPlace = originCoords;
-      let destinationPlace = destinationCoords;
-
-      if (!originPlace || originPlace.displayName !== origin) {
-        originPlace = await geocodePlace(origin, { countryCode: "in" });
-      }
-      if (!destinationPlace || destinationPlace.displayName !== destination) {
-        destinationPlace = await geocodePlace(destination, {
-          countryCode: "in",
-        });
-      }
-
-      if (!originPlace || !destinationPlace) {
-        setMapError(
-          "Could not find one of those locations. Try a more specific address.",
-        );
-        setIsLoading(false);
-        return;
-      }
       setOriginCoords(originPlace);
       setDestinationCoords(destinationPlace);
 
@@ -97,7 +88,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       const primaryRoute = realRoutes[0];
       setRoutePath(primaryRoute.coordinates);
       setRouteSteps(primaryRoute.steps);
-      // Be honest about how many real distinct paths OSRM actually found.
       console.log(
         `OSRM found ${realRoutes.length} distinct route(s) for this trip.`,
       );
@@ -115,19 +105,39 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       });
       const data = await res.json();
 
-      if (data.routes && Array.isArray(data.routes)) {
-        // Only keep as many cards as we have REAL distinct paths for.
-        // If OSRM only found 1 real path, show only 1 card — with the
-        // top (safest-framed) scoring — rather than faking 3 identical
-        // "alternatives."
+      const gridTimeOfDay: GridTimeOfDay =
+        timeOfDay === "Evening"
+          ? "Dusk"
+          : timeOfDay === "Late Night"
+          ? "Late Night"
+          : timeOfDay === "Day"
+          ? "Day"
+          : "Night";
+
+      const assessedRoutes = realRoutes.map((r) =>
+        scoreRoutePath(r.coordinates, locations, reports, gridTimeOfDay),
+      );
+
+      if (data.routes && Array.isArray(data.routes) && data.routes.length > 0) {
         const usableCount = Math.min(data.routes.length, realRoutes.length);
-        const updatedRoutes = data.routes
+        const updatedRoutes: RouteOption[] = data.routes
           .slice(0, usableCount)
-          .map((r: RouteOption, idx: number) => ({
-            ...r,
-            distance: formatDistance(realRoutes[idx].distanceMeters),
-            estimatedTime: formatDuration(realRoutes[idx].durationSeconds),
-          }));
+          .map((r: RouteOption, idx: number) => {
+            const assessment = assessedRoutes[idx];
+            return {
+              ...r,
+              distance: formatDistance(realRoutes[idx].distanceMeters),
+              estimatedTime: formatDuration(realRoutes[idx].durationSeconds),
+              safetyScore: assessment.pathSafetyScore,
+              lightingPercent: assessment.lightingPercent,
+              accessibilityScore: assessment.accessibilityPercent,
+              riskSegments: assessment.riskSegments.length > 0 ? assessment.riskSegments : [],
+              highlights: assessment.policeBoothNearby
+                ? [...r.highlights, "Passes within 400m of an active police booth"]
+                : r.highlights,
+            };
+          })
+          .sort((a, b) => b.safetyScore - a.safetyScore);
         setRoutes(updatedRoutes);
         setActiveRouteId(updatedRoutes[0].id);
 
@@ -136,6 +146,42 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
             "Only one distinct walking path was found between these points — showing a single verified route rather than fabricated alternatives.",
           );
         }
+      } else if (realRoutes.length > 0) {
+        const synthesizedRoutes: RouteOption[] = realRoutes
+          .map((r, idx) => {
+            const assessment = assessedRoutes[idx];
+            const rank = [...assessedRoutes]
+              .sort((a, b) => b.pathSafetyScore - a.pathSafetyScore)
+              .indexOf(assessment);
+            return {
+              id: `route-computed-${idx}`,
+              name: rank === 0 ? "Recommended Safe Route" : `Alternate Route ${idx + 1}`,
+              tag: rank === 0 ? "Safest (computed)" : "Alternate (computed)",
+              distance: formatDistance(r.distanceMeters),
+              estimatedTime: formatDuration(r.durationSeconds),
+              safetyScore: assessment.pathSafetyScore,
+              lightingPercent: assessment.lightingPercent,
+              accessibilityScore: assessment.accessibilityPercent,
+              highlights: [
+                `${assessment.cctvPercent}% average CCTV coverage along this path`,
+                assessment.policeBoothNearby
+                  ? "Passes within 400m of an active police booth"
+                  : "No police booth directly on this path",
+              ],
+              riskSegments: assessment.riskSegments,
+            };
+          })
+          .sort((a, b) => b.safetyScore - a.safetyScore);
+
+        setRoutes(synthesizedRoutes);
+        setActiveRouteId(synthesizedRoutes[0].id);
+        setMapError(
+          "Live AI descriptions are unavailable right now — safety scores below are computed directly from real location and report data instead.",
+        );
+      } else {
+        setMapError(
+          "Live route map loaded, but no route options could be generated. Try again in a moment.",
+        );
       }
     } catch (e) {
       console.error(e);
@@ -146,6 +192,31 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       setIsLoading(false);
     }
   };
+
+  const handleGenerateRoutes = async () => {
+    setMapError(null);
+    let originPlace = originCoords;
+    let destinationPlace = destinationCoords;
+
+    if (!originPlace || originPlace.displayName !== origin) {
+      originPlace = await geocodePlace(origin, { countryCode: "in" });
+    }
+    if (!destinationPlace || destinationPlace.displayName !== destination) {
+      destinationPlace = await geocodePlace(destination, {
+        countryCode: "in",
+      });
+    }
+
+    if (!originPlace || !destinationPlace) {
+      setMapError(
+        "Could not find one of those locations. Try a more specific address.",
+      );
+      return;
+    }
+
+    await runRouteGeneration(originPlace, destinationPlace);
+  };
+
   const handleUseCurrentLocation = () => {
     if (!navigator.geolocation) {
       setMapError("Geolocation is not supported by this browser.");
@@ -156,7 +227,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       (pos) => {
         const { latitude, longitude } = pos.coords;
 
-        // Show something immediately, even before reverse-geocoding resolves.
         setOrigin(`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
         setOriginCoords({
           lat: latitude,
@@ -164,7 +234,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           displayName: "Current Location",
         });
 
-        // Then try to upgrade it to a readable address.
         fetch(
           `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`,
         )
@@ -181,7 +250,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           })
           .catch((err) => {
             console.error("Reverse geocode failed:", err);
-            // Not fatal — raw coordinates are already set above.
           });
       },
       (err) => {
@@ -195,43 +263,75 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
       { enableHighAccuracy: true, timeout: 10000 },
     );
   };
+
   useEffect(() => {
-  if (!navigator.geolocation) {
-    setOrigin("Connaught Place, New Delhi, India");
-    return;
-  }
-
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      const { latitude, longitude } = pos.coords;
-      setOrigin(`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
-      setOriginCoords({ lat: latitude, lng: longitude, displayName: "Current Location" });
-
-      fetch(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`)
-        .then((res) => res.json())
-        .then((data) => {
-          if (data?.display_name) {
-            setOrigin(data.display_name);
-            setOriginCoords({ lat: latitude, lng: longitude, displayName: data.display_name });
-          }
-        })
-        .catch(() => {
-          // Reverse geocode failed — raw coordinates from above are still fine.
-        });
-    },
-    (err) => {
-      console.warn("Geolocation unavailable, using fallback:", err.message);
+    if (!navigator.geolocation) {
       setOrigin("Connaught Place, New Delhi, India");
-    },
-    { enableHighAccuracy: true, timeout: 8000 }
-  );
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, []);
+      setOriginReady(true);
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        setOrigin(`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
+        setOriginCoords({ lat: latitude, lng: longitude, displayName: "Current Location" });
+        setOriginReady(true);
+
+        fetch(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`)
+          .then((res) => res.json())
+          .then((data) => {
+            if (data?.display_name) {
+              setOrigin(data.display_name);
+              setOriginCoords({ lat: latitude, lng: longitude, displayName: data.display_name });
+            }
+          })
+          .catch(() => {
+          });
+      },
+      (err) => {
+        console.warn("Geolocation unavailable, using fallback:", err.message);
+        setOrigin("Connaught Place, New Delhi, India");
+        setOriginReady(true);
+      },
+      { enableHighAccuracy: true, timeout: 8000 },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!selectedLocationTarget || !originReady) return;
+    if (lastAutoRoutedTargetId.current === selectedLocationTarget.id) return;
+    lastAutoRoutedTargetId.current = selectedLocationTarget.id;
+
+    setDestination(selectedLocationTarget.name);
+
+    const destinationPlace: GeocodedPlace = {
+      lat: selectedLocationTarget.lat,
+      lng: selectedLocationTarget.lng,
+      displayName: selectedLocationTarget.name,
+    };
+
+    (async () => {
+      let resolvedOrigin = originCoords;
+      if (!resolvedOrigin) {
+        resolvedOrigin = await geocodePlace(origin, { countryCode: "in" });
+      }
+      if (!resolvedOrigin) {
+        setMapError(
+          "Could not detect your starting location automatically. Set it manually above and click Re-calculate.",
+        );
+        return;
+      }
+      await runRouteGeneration(resolvedOrigin, destinationPlace);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedLocationTarget, originReady]);
+
   const selectedRoute = routes.find((r) => r.id === activeRouteId) || routes[0];
 
   return (
     <div className="space-y-6">
-      {/* Route Generator Control Card */}
       <div className="bg-white border border-[#EFE6E1] rounded-[24px] p-6 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#EFE6E1] pb-4">
           <div>
@@ -258,7 +358,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           </button>
         </div>
 
-        {/* Origin & Destination Inputs */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
           <div>
             <label className="block text-[#6E676A] mb-1.5 font-medium">
@@ -329,7 +428,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           </div>
         </div>
 
-        {/* Quick Destination Presets */}
         <div className="flex items-center space-x-2 text-xs pt-1 overflow-x-auto no-scrollbar">
           <span className="text-[#6E676A] font-medium whitespace-nowrap">
             Quick Target:
@@ -375,7 +473,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           />
         </div>
       )}
-      {/* Generated Route Options Cards Grid */}
       {routes.length === 0 ? (
         <div className="bg-white border border-dashed border-[#EFE6E1] rounded-[24px] p-10 text-center space-y-2">
           <Navigation className="w-6 h-6 text-[#A70F43] mx-auto" />
@@ -434,7 +531,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
                     </span>
                   </div>
 
-                  {/* Progress Indicators */}
                   <div className="space-y-2.5 text-xs">
                     <div>
                       <div className="flex justify-between text-[11px] text-[#6E676A] mb-1">
@@ -467,7 +563,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
                     </div>
                   </div>
 
-                  {/* Highlights List */}
                   <div className="mt-4 space-y-1.5 text-xs text-[#221F20]">
                     <span className="text-[11px] font-semibold text-[#6E676A]">
                       Safety Features:
@@ -483,7 +578,6 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
                     ))}
                   </div>
 
-                  {/* Risk Segments Warnings */}
                   {route.riskSegments && route.riskSegments.length > 0 && (
                     <div className="mt-4 p-3 rounded-[16px] bg-amber-50/80 border border-amber-200 space-y-1 text-xs">
                       <span className="font-semibold text-amber-800 flex items-center gap-1 text-[11px]">
@@ -510,52 +604,14 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
                       : "bg-[#FEFCFA] hover:bg-[#FFF0F3] text-[#221F20] border border-[#EFE6E1]"
                   }`}
                 >
-                  <Navigation className="w-4 h-4" />
-                  <span>Start Live Guided Walk</span>
+                  <span>
+                    {isSelected ? "Navigating..." : "Start Navigation"}
+                  </span>
+                  <ArrowRight className="w-3.5 h-3.5" />
                 </button>
               </div>
             );
           })}
-        </div>
-      )}
-
-      {/* Selected Route Turn-By-Turn Preview */}
-      {selectedRoute && (
-        <div className="bg-white border border-[#EFE6E1] rounded-[24px] p-6 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-4">
-          <div className="flex items-center justify-between border-b border-[#EFE6E1] pb-3">
-            <h3 className="text-base font-bold text-[#221F20] flex items-center gap-2">
-              <Footprints className="w-4 h-4 text-[#A70F43]" />
-              Turn-By-Turn Analysis: {selectedRoute.name}
-            </h3>
-            <span className="text-xs text-[#6E676A]">Live GPS Sync</span>
-          </div>
-
-          <div className="space-y-3 text-xs">
-            {routeSteps.length === 0 ? (
-              <p className="text-[#6E676A] text-xs">
-                Generate a route to see live turn-by-turn steps.
-              </p>
-            ) : (
-              routeSteps.map((step, idx) => (
-                <div
-                  key={idx}
-                  className="flex items-start space-x-3 p-3.5 rounded-[18px] bg-[#FEFCFA] border border-[#EFE6E1]"
-                >
-                  <div className="w-6 h-6 rounded-full bg-[#A70F43] text-white flex items-center justify-center font-bold shrink-0 text-xs">
-                    {idx + 1}
-                  </div>
-                  <div>
-                    <div className="font-semibold text-[#221F20]">
-                      {step.instruction}
-                    </div>
-                    <p className="text-[#6E676A] text-xs mt-0.5">
-                      {formatDistance(step.distanceMeters)}
-                    </p>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
         </div>
       )}
     </div>

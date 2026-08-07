@@ -16,6 +16,7 @@ import { GuardIaLogo } from './components/GuardIaLogo';
 import { WifiOff, AlertTriangle } from 'lucide-react';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { useMotionSafetyDetection } from './hooks/useMotionSafetyDetection';
+import { useEvidenceRecorder } from './hooks/useEvidenceRecorder';
 
 import {
   INITIAL_LOCATIONS,
@@ -64,8 +65,19 @@ export default function App() {
   const setIsOffline = (val: boolean) => setForceOfflineDemo(val);
 
   const [isSosOpen, setIsSosOpen] = useState(false);
-  const [isRecordingVault, setIsRecordingVault] = useState(false);
   const [selectedRouteTarget, setSelectedRouteTarget] = useState<SafetyLocation | undefined>(undefined);
+
+  const handleAddEvidence = (item: EvidenceItem) => {
+    setEvidenceList((prev) => [item, ...prev]);
+  };
+
+  // Mounted once, here at the app root — same reason as
+  // useMotionSafetyDetection below: SOS can fire from any tab, so the
+  // actual camera/mic capture + encryption + upload pipeline can't live
+  // inside EvidenceVault.tsx anymore (that component only renders when
+  // activeTab === 'vault', so an SOS trigger from another tab would have
+  // had nothing to call).
+  const evidenceRecorder = useEvidenceRecorder(handleAddEvidence);
 
   // Mounted once, here at the app root, so shake/fall/drag detection (and
   // the resulting "confirm you're safe or SOS auto-dispatches" countdown)
@@ -107,10 +119,6 @@ export default function App() {
     setContacts((prev) => prev.filter((c) => c.id !== id));
   };
 
-  const handleAddEvidence = (item: EvidenceItem) => {
-    setEvidenceList((prev) => [item, ...prev]);
-  };
-
   const handleSelectLocationForRoute = (loc: SafetyLocation) => {
     setSelectedRouteTarget(loc);
     setActiveTab('routes');
@@ -130,7 +138,7 @@ export default function App() {
           onTriggerSos={() => setIsSosOpen(true)}
           isOffline={isOffline}
           setIsOffline={setIsOffline}
-          isRecordingVault={isRecordingVault}
+          isRecordingVault={evidenceRecorder.isRecording}
           heartRate={vitals.heartRate}
           movementSensorsActive={sensorSettings.isEnabled}
           userName="Shreya"
@@ -184,9 +192,7 @@ export default function App() {
           {activeTab === 'vault' && (
             <EvidenceVault
               evidenceList={evidenceList}
-              onAddEvidence={handleAddEvidence}
-              isRecordingVault={isRecordingVault}
-              setIsRecordingVault={setIsRecordingVault}
+              recorder={evidenceRecorder}
             />
           )}
 
@@ -241,6 +247,9 @@ export default function App() {
         onAddContact={handleAddContact}
         onDeleteContact={handleDeleteContact}
         isOffline={isOffline}
+        onStartRecording={evidenceRecorder.startRecording}
+        onStopRecording={evidenceRecorder.stopRecording}
+        isRecording={evidenceRecorder.isRecording}
       />
 
       {/* Footer */}
