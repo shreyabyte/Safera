@@ -22,6 +22,7 @@ import {
   Info,
   X,
   ShieldCheck,
+  CheckCircle2,
 } from 'lucide-react';
 
 import { LiveLocationShareModal } from './LiveLocationShareModal';
@@ -67,12 +68,20 @@ const fetchWithTimeout = async (
   }
 };
 
+interface RiskBreakdownItem {
+  factor: string;
+  score: number;
+  note: string;
+}
+
 interface LiveRiskData {
   safetyScore: number;
   riskLevel: string;
   summary: string;
-  factors: string[];
-  safetyTips: string[];
+  riskBreakdown: RiskBreakdownItem[];
+  timeContext: string;
+  recommendedActions: string[];
+  nearbySafeResourceNote: string;
 }
 
 export const SafetyMap: React.FC<SafetyMapProps> = ({
@@ -221,53 +230,67 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
     liveScoreStatus === 'live' && liveScoreData ? liveScoreData.riskLevel : 'Safe zone';
 
   const [isAnalyzingAi, setIsAnalyzingAi] = useState(false);
-  const [aiAnalysisResult, setAiAnalysisResult] = useState<{
-    safetyScore: number;
-    riskLevel: string;
-    summary: string;
-    factors: string[];
-    safetyTips: string[];
-  } | null>(null);
+  const [aiAnalysisResult, setAiAnalysisResult] = useState<LiveRiskData | null>(null);
 
-  // Builds a fallback analysis from the location's OWN real fields
-  // (lighting, CCTV %, police distance, FIR count, crowd density) instead
-  // of a fixed generic sentence. Used only when the live Gemini call fails,
-  // so even a failed request never claims something untrue about the
-  // specific location — e.g. it won't call a 1-star-lit alley "well-lit."
-  const buildLocationAwareFallback = (loc: SafetyLocation) => {
-    const lightingDesc =
+  // Builds a fallback report from the location's OWN real fields (lighting,
+  // CCTV %, police distance, FIR/SOS counts, crowd density, nearest safe
+  // resource) instead of a fixed generic sentence. Used only when the live
+  // Gemini call fails outright (network error, non-OK response), so even a
+  // failed request never claims something untrue about the specific
+  // location — e.g. it won't call a 1-star-lit alley "well-lit." Mirrors the
+  // shape of the server's own data-only report so the UI never has to
+  // special-case which path produced the result.
+  const buildLocationAwareFallback = (loc: SafetyLocation): LiveRiskData => {
+    const lightingNote =
       loc.lightingStars >= 4
-        ? 'well-lit with strong streetlight coverage'
+        ? 'Well-lit with strong streetlight coverage.'
         : loc.lightingStars >= 2
-        ? 'moderately lit, with some dark patches after dusk'
-        : 'poorly lit, with minimal working streetlights';
+        ? 'Moderately lit, with some dark patches after dusk.'
+        : 'Poorly lit, with minimal working streetlights.';
 
-    const cctvDesc =
+    const cctvNote =
       loc.cctvPercent >= 80
-        ? 'extensive CCTV coverage'
+        ? 'Extensive CCTV coverage.'
         : loc.cctvPercent >= 40
-        ? 'partial CCTV coverage'
-        : 'very limited CCTV coverage';
+        ? 'Partial CCTV coverage — some blind spots likely.'
+        : 'Very limited CCTV coverage.';
 
-    const policeDesc =
+    const policeNote =
       loc.policeDistanceMeters <= 300
-        ? `a police presence just ${loc.policeDistanceMeters}m away`
+        ? `Active police presence just ${loc.policeDistanceMeters}m away.`
         : loc.policeDistanceMeters <= 700
-        ? `the nearest police booth ${loc.policeDistanceMeters}m away`
-        : `no nearby police booth — the closest is ${loc.policeDistanceMeters}m away`;
+        ? `Nearest police booth is ${loc.policeDistanceMeters}m away.`
+        : `No nearby police booth — closest is ${loc.policeDistanceMeters}m away.`;
+
+    const incidentNote = `${loc.firCount} FIR incident(s) and ${loc.recentSosCount} recent SOS trigger(s) logged nearby.`;
+    const crowdNote = `${loc.crowdDensity} pedestrian traffic${
+      timeOfDay === 'Night' || timeOfDay === 'Late Night' ? ', which thins out further after dark.' : '.'
+    }`;
+
+    const nearby = findNearestSafeResource(loc.lat, loc.lng, locations);
 
     return {
       safetyScore: loc.safetyScore,
       riskLevel: loc.riskLevel,
-      summary: `${loc.name} is currently rated "${loc.riskLevel}" (${loc.safetyScore}/100). It's ${lightingDesc}, with ${cctvDesc} and ${policeDesc}. (Live AI analysis is temporarily unavailable — this summary is generated directly from the location's own logged data.)`,
-      factors: [
-        `Lighting Rating: ${loc.lightingStars}/5 stars`,
-        `CCTV Coverage: ${loc.cctvPercent}%`,
-        `Police Distance: ${loc.policeDistanceMeters}m away`,
-        `FIR Incidents Logged: ${loc.firCount}`,
-        `Crowd Density: ${loc.crowdDensity}`,
+      summary: `${loc.name} is currently rated "${loc.riskLevel}" (${loc.safetyScore}/100). ${lightingNote} ${policeNote} (Live AI analysis is temporarily unavailable — this report is generated directly from the location's own logged data.)`,
+      riskBreakdown: [
+        { factor: 'Lighting', score: Math.round((loc.lightingStars / 5) * 100), note: lightingNote },
+        { factor: 'CCTV Coverage', score: loc.cctvPercent, note: cctvNote },
+        { factor: 'Police Proximity', score: Math.max(0, 100 - Math.round(loc.policeDistanceMeters / 15)), note: policeNote },
+        { factor: 'Incident History', score: Math.max(0, 100 - loc.firCount * 10 - loc.recentSosCount * 15), note: incidentNote },
+        {
+          factor: 'Crowd & Foot Traffic',
+          score: loc.crowdDensity === 'High' ? 75 : loc.crowdDensity === 'Low' ? 35 : 55,
+          note: crowdNote,
+        },
       ],
-      safetyTips:
+      timeContext:
+        timeOfDay === 'Night' || timeOfDay === 'Late Night'
+          ? `After dark, lighting and police proximity matter more than during the day${
+              loc.lightingStars <= 2 ? ' — and this spot is a known weak point on lighting.' : '.'
+            }`
+          : `During ${timeOfDay}, visibility and foot traffic are the biggest safety factors here, not lighting.`,
+      recommendedActions:
         loc.safetyScore >= 70
           ? ['This is a comparatively safe zone — standard precautions still apply.', 'Stick to the main walkway.']
           : [
@@ -275,12 +298,21 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
               'Stay on well-lit main roads instead of side alleys.',
               'Share your live location with a trusted contact before entering this zone.',
             ],
+      nearbySafeResourceNote: nearby
+        ? `${nearby.location.name} is the closest safe resource${
+            nearby.reason === 'police-booth' ? ' with an active police booth' : ''
+          }, about ${
+            nearby.distanceMeters >= 1000 ? `${(nearby.distanceMeters / 1000).toFixed(1)} km` : `${Math.round(nearby.distanceMeters)} m`
+          } away.`
+        : 'No verified safe resource is logged near this location yet.',
     };
   };
 
   const handleRunAiRiskPredictor = async (loc: SafetyLocation) => {
     setIsAnalyzingAi(true);
     try {
+      const nearby = findNearestSafeResource(loc.lat, loc.lng, locations);
+
       const response = await fetch('/api/ai/predict-risk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -291,6 +323,18 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           crowdDensity: loc.crowdDensity,
           firCount: loc.firCount,
           recentReports: reports.filter((r) => r.locationName.includes(loc.name.split(' ')[0])).map((r) => r.description),
+          // Real per-location signals — this is what actually grounds the
+          // report in this specific spot instead of a generic paragraph.
+          safetyScore: loc.safetyScore,
+          lightingStars: loc.lightingStars,
+          cctvPercent: loc.cctvPercent,
+          policeDistanceMeters: loc.policeDistanceMeters,
+          recentSosCount: loc.recentSosCount,
+          wheelchairAccessible: loc.accessibility.wheelchairRamps,
+          policeBoothOnSite: loc.accessibility.policeBooths,
+          nearestSafeResource: nearby
+            ? { name: nearby.location.name, distanceMeters: nearby.distanceMeters, reason: nearby.reason }
+            : null,
         }),
       });
 
@@ -302,7 +346,12 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
 
       // Validate shape before trusting it — a malformed or empty response
       // shouldn't render as if it were a real AI analysis.
-      if (typeof data.safetyScore !== 'number' || typeof data.summary !== 'string' || !data.summary.trim()) {
+      if (
+        typeof data.safetyScore !== 'number' ||
+        typeof data.summary !== 'string' ||
+        !data.summary.trim() ||
+        !Array.isArray(data.riskBreakdown)
+      ) {
         throw new Error('predict-risk returned an unexpected shape');
       }
 
@@ -858,12 +907,71 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           </button>
 
           {aiAnalysisResult && (
-            <div className="bg-[#FFF0F3] border border-[#EFE6E1] rounded-[22px] p-4 space-y-2 text-xs text-[#221F20]">
+            <div className="bg-[#FFF0F3] border border-[#EFE6E1] rounded-[22px] p-4.5 space-y-4 text-xs text-[#221F20]">
               <div className="font-semibold text-[#A7194B] flex items-center gap-1.5">
                 <Sparkles className="w-4 h-4" />
-                AI Analysis Evaluation
+                AI Safety Report
               </div>
+
+              {/* Executive summary */}
               <p className="text-[#6E676A] leading-relaxed">{aiAnalysisResult.summary}</p>
+
+              {/* Per-factor breakdown, each grounded in a real reason, not just a number */}
+              {aiAnalysisResult.riskBreakdown && aiAnalysisResult.riskBreakdown.length > 0 && (
+                <div className="space-y-2.5 border-t border-[#EFE6E1] pt-3">
+                  <span className="text-[11px] font-semibold text-[#6E676A] uppercase tracking-wide">
+                    Risk Breakdown
+                  </span>
+                  {aiAnalysisResult.riskBreakdown.map((item, idx) => (
+                    <div key={idx} className="space-y-1">
+                      <div className="flex justify-between items-center">
+                        <span className="font-semibold text-[#221F20]">{item.factor}</span>
+                        <span className="text-[#A7194B] font-bold">{item.score}/100</span>
+                      </div>
+                      <div className="w-full bg-white border border-[#EFE6E1] h-1.5 rounded-full overflow-hidden">
+                        <div
+                          className="bg-[#A70F43] h-full rounded-full transition-all"
+                          style={{ width: `${item.score}%` }}
+                        />
+                      </div>
+                      <p className="text-[#6E676A]">{item.note}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Why this time of day matters here specifically */}
+              {aiAnalysisResult.timeContext && (
+                <div className="border-t border-[#EFE6E1] pt-3 space-y-1">
+                  <span className="text-[11px] font-semibold text-[#6E676A] uppercase tracking-wide">
+                    Right Now ({timeOfDay})
+                  </span>
+                  <p className="text-[#221F20] leading-relaxed">{aiAnalysisResult.timeContext}</p>
+                </div>
+              )}
+
+              {/* Concrete next steps, not vague reassurance */}
+              {aiAnalysisResult.recommendedActions && aiAnalysisResult.recommendedActions.length > 0 && (
+                <div className="border-t border-[#EFE6E1] pt-3 space-y-1.5">
+                  <span className="text-[11px] font-semibold text-[#6E676A] uppercase tracking-wide">
+                    Recommended Actions
+                  </span>
+                  {aiAnalysisResult.recommendedActions.map((action, idx) => (
+                    <div key={idx} className="flex items-start gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[#5FA777]" />
+                      <span className="text-[#221F20]">{action}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Where to actually go if things feel wrong */}
+              {aiAnalysisResult.nearbySafeResourceNote && (
+                <div className="border-t border-[#EFE6E1] pt-3 flex items-start gap-1.5">
+                  <ShieldCheck className="w-3.5 h-3.5 shrink-0 mt-0.5 text-emerald-700" />
+                  <p className="text-[#221F20]">{aiAnalysisResult.nearbySafeResourceNote}</p>
+                </div>
+              )}
             </div>
           )}
 
