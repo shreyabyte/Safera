@@ -25,12 +25,11 @@ import {
 } from 'lucide-react';
 
 import { LiveLocationShareModal } from './LiveLocationShareModal';
+import { LiveSafetyMapView } from './LiveSafetyMapView';
 import {
   computeSafetyGrid,
   findNearestSafeResource,
-  projectToPct,
   gridToBoundingBox,
-  riskBandColor,
   type SafetyGridCell,
 } from '../utils/hotspot';
 import { fetchNearbyPlaces, placesToSafetyLocations } from '../utils/overpass';
@@ -428,15 +427,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
 
   const boundingBox = useMemo(() => gridToBoundingBox(activeLocations, reports), [activeLocations, reports]);
 
-  const projectedLocations = useMemo(
-    () =>
-      filteredLocations.map((loc) => ({
-        loc,
-        ...projectToPct(loc.lat, loc.lng, boundingBox),
-      })),
-    [filteredLocations, boundingBox]
-  );
-
   const hottestCell = useMemo(
     () => safetyGrid.reduce<SafetyGridCell | null>((max, c) => (!max || c.risk > max.risk ? c : max), null),
     [safetyGrid]
@@ -810,57 +800,28 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
             </div>
           )}
 
-          <div className="relative bg-[#FCF7F1]/40 border border-[#EFE6E1] rounded-[22px] min-h-[440px] overflow-hidden flex flex-col justify-between p-5">
-            <div className="absolute inset-0 opacity-15 bg-[radial-gradient(#A7194B_1px,transparent_1px)] [background-size:18px_18px]"></div>
+          <div className="relative bg-[#FCF7F1]/40 border border-[#EFE6E1] rounded-[22px] min-h-[440px] overflow-hidden p-0">
+            {/* A real interactive Leaflet map — actual streets, zoom/pan, and
+                popups — instead of an abstract percentage-positioned div grid.
+                The risk rectangles and pins are still driven entirely by
+                computeSafetyGrid()/real location data; only the rendering
+                surface changed. */}
+            <LiveSafetyMapView
+              locations={filteredLocations}
+              safetyGrid={safetyGrid}
+              boundingBox={boundingBox}
+              userCoords={userCoords}
+              selectedLocationId={selectedLocation.id}
+              onSelectLocation={(loc) => {
+                setSelectedLocation(loc);
+                setAiAnalysisResult(null);
+              }}
+              showHeatmap={showHeatmap}
+              heightClassName="h-[440px]"
+            />
+          </div>
 
-            {/* Real computed risk grid — each cell's opacity/color comes from
-                computeSafetyGrid(), driven by actual location + report data,
-                not a fixed pair of blur circles. */}
-            {showHeatmap && (
-              <div className="absolute inset-0">
-                {safetyGrid.map((cell) => (
-                  <div
-                    key={`${cell.row}-${cell.col}`}
-                    title={`Risk ${cell.risk}/100 · ${cell.contributingSignals} nearby signal(s)`}
-                    className="absolute transition-colors duration-500"
-                    style={{
-                      left: `${cell.xPct}%`,
-                      top: `${cell.yPct}%`,
-                      width: `${cell.widthPct}%`,
-                      height: `${cell.heightPct}%`,
-                      transform: 'translate(-50%, -50%)',
-                      backgroundColor: riskBandColor(cell.band),
-                      filter: 'blur(10px)',
-                    }}
-                  />
-                ))}
-
-                {/* Precise pin markers for every real location, positioned
-                    by actual lat/lng instead of a static two-column card grid. */}
-                {projectedLocations.map(({ loc, xPct, yPct }) => (
-                  <button
-                    key={`pin-${loc.id}`}
-                    onClick={() => {
-                      setSelectedLocation(loc);
-                      setAiAnalysisResult(null);
-                    }}
-                    title={loc.name}
-                    className={`absolute w-2.5 h-2.5 rounded-full border-2 border-white shadow-md transition-transform hover:scale-150 cursor-pointer ${
-                      selectedLocation.id === loc.id ? 'scale-150 ring-2 ring-[#A7194B]' : ''
-                    }`}
-                    style={{
-                      left: `${xPct}%`,
-                      top: `${yPct}%`,
-                      transform: 'translate(-50%, -50%)',
-                      backgroundColor: loc.safetyScore >= 70 ? '#5FA777' : loc.safetyScore >= 45 ? '#F2C94C' : '#A7194B',
-                      zIndex: 5,
-                    }}
-                  />
-                ))}
-              </div>
-            )}
-
-            <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 gap-3.5 my-auto">
+          <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 gap-3.5">
               {filteredLocations.map((loc) => {
                 const isSelected = selectedLocation.id === loc.id;
                 const isSafe = loc.safetyScore >= 80;
@@ -939,7 +900,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
                 </span>
               )}
             </div>
-          </div>
         </div>
 
         <div className="lg:col-span-5 bg-white border border-[#EFE6E1] rounded-[28px] p-6.5 shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-5">

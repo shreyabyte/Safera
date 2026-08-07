@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { EvidenceItem } from '../types';
 import { GuardIaLogo } from './GuardIaLogo';
 import { EvidenceRecorderState } from '../hooks/useEvidenceRecorder';
+import { hasVaultPin, setVaultPin, verifyVaultPin } from '../lib/auth';
 import {
   Shield,
   Camera,
@@ -43,18 +44,56 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({ evidenceList, reco
 
   const [isLocked, setIsLocked] = useState(true);
   const [pinInput, setPinInput] = useState('');
+  const [pinConfirmInput, setPinConfirmInput] = useState('');
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [isVerifyingPin, setIsVerifyingPin] = useState(false);
 
-  // SECURITY NOTE: this PIN check accepts '1234' (the documented default)
-  // or a blank PIN, meaning anyone holding an unlocked device can view
-  // saved evidence with zero effort. Left unchanged here since it's a
-  // separate decision (the vault's view/unlock flow) from what was asked
-  // for in this pass (SOS-triggered encrypted recording) — flagging
-  // rather than silently changing your auth flow.
-  const handleUnlockVault = () => {
-    if (pinInput === '1234' || pinInput === '') {
+  // Whether this account has ever set a real vault PIN yet. `null` while
+  // unknown (avoids flashing the wrong form for a frame), then resolved to
+  // true/false once on mount.
+  const [needsPinSetup, setNeedsPinSetup] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    setNeedsPinSetup(!hasVaultPin());
+  }, []);
+
+  // Real PIN system: no hardcoded default, no blank-input bypass. First
+  // visit asks the user to set their own 4-8 digit PIN (hashed the same
+  // SHA-256 way the login password already is); every visit after that
+  // requires the actual PIN to match.
+  const handleSetupPin = async () => {
+    setPinError(null);
+    if (pinInput !== pinConfirmInput) {
+      setPinError('PINs do not match.');
+      return;
+    }
+    setIsVerifyingPin(true);
+    try {
+      await setVaultPin(pinInput);
+      setNeedsPinSetup(false);
       setIsLocked(false);
-    } else {
-      alert('Incorrect Vault PIN. Default PIN is 1234.');
+      setPinInput('');
+      setPinConfirmInput('');
+    } catch (err) {
+      setPinError(err instanceof Error ? err.message : 'Could not set PIN. Please try again.');
+    } finally {
+      setIsVerifyingPin(false);
+    }
+  };
+
+  const handleUnlockVault = async () => {
+    setPinError(null);
+    setIsVerifyingPin(true);
+    try {
+      const ok = await verifyVaultPin(pinInput);
+      if (ok) {
+        setIsLocked(false);
+        setPinInput('');
+      } else {
+        setPinError('Incorrect Vault PIN.');
+      }
+    } finally {
+      setIsVerifyingPin(false);
     }
   };
 
@@ -185,42 +224,90 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({ evidenceList, reco
               <Lock className="w-4 h-4 text-[#A70F43]" />
               Saved Evidence Locker ({evidenceList.length})
             </span>
-            <button
-              onClick={() => setIsLocked(!isLocked)}
-              className="text-[10px] font-mono text-[#A70F43] hover:underline font-bold"
-            >
-              {isLocked ? 'Unlock Vault' : 'Lock Vault'}
-            </button>
+            {/* Only ever LOCKS directly — re-locking needs no PIN, but
+                unlocking must always go through the real PIN form below.
+                Previously this toggled straight to unlocked with no check
+                at all, which was its own bypass of the PIN entirely. */}
+            {!isLocked && (
+              <button
+                onClick={() => setIsLocked(true)}
+                className="text-[10px] font-mono text-[#A70F43] hover:underline font-bold"
+              >
+                Lock Vault
+              </button>
+            )}
           </div>
 
-          {/* Locked PIN Challenge */}
+          {/* Locked PIN Challenge — real setup/verify flow, no default or blank bypass */}
           {isLocked ? (
             <div className="bg-[#FFF8F9] p-5 rounded-xl border border-[#E9D8DE] text-center space-y-3">
               <div className="w-10 h-10 mx-auto rounded-full bg-[#FFF0F3] text-[#A70F43] border border-[#E9D8DE] flex items-center justify-center">
                 <Key className="w-5 h-5" />
               </div>
-              <div>
-                <h4 className="text-xs font-bold text-[#2F2B2D]">Protected Evidence Vault</h4>
-                <p className="text-[10px] text-[#7B7280] mt-0.5">
-                  Enter PIN (Default: 1234 or leave blank)
-                </p>
-              </div>
 
-              <div className="max-w-xs mx-auto flex gap-2">
-                <input
-                  type="password"
-                  placeholder="PIN"
-                  value={pinInput}
-                  onChange={(e) => setPinInput(e.target.value)}
-                  className="w-full bg-white border border-[#E9D8DE] rounded-xl px-3 py-1.5 text-center text-xs font-mono text-[#2F2B2D] focus:outline-none focus:border-[#A70F43]"
-                />
-                <button
-                  onClick={handleUnlockVault}
-                  className="px-3.5 py-1.5 bg-[#A70F43] hover:bg-[#8D0D39] text-white font-bold text-xs rounded-xl transition-colors shrink-0 shadow-sm"
-                >
-                  Unlock
-                </button>
-              </div>
+              {needsPinSetup ? (
+                <>
+                  <div>
+                    <h4 className="text-xs font-bold text-[#2F2B2D]">Set up your Vault PIN</h4>
+                    <p className="text-[10px] text-[#7B7280] mt-0.5">
+                      Choose a 4-8 digit PIN to protect your evidence. You'll need it every time you open the vault.
+                    </p>
+                  </div>
+                  <div className="max-w-xs mx-auto space-y-2">
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      placeholder="New PIN"
+                      value={pinInput}
+                      onChange={(e) => setPinInput(e.target.value)}
+                      className="w-full bg-white border border-[#E9D8DE] rounded-xl px-3 py-1.5 text-center text-xs font-mono text-[#2F2B2D] focus:outline-none focus:border-[#A70F43]"
+                    />
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      placeholder="Confirm PIN"
+                      value={pinConfirmInput}
+                      onChange={(e) => setPinConfirmInput(e.target.value)}
+                      className="w-full bg-white border border-[#E9D8DE] rounded-xl px-3 py-1.5 text-center text-xs font-mono text-[#2F2B2D] focus:outline-none focus:border-[#A70F43]"
+                    />
+                    {pinError && <p className="text-[10px] text-[#A70F43] font-semibold">{pinError}</p>}
+                    <button
+                      onClick={handleSetupPin}
+                      disabled={isVerifyingPin || !pinInput || !pinConfirmInput}
+                      className="w-full px-3.5 py-1.5 bg-[#A70F43] hover:bg-[#8D0D39] text-white font-bold text-xs rounded-xl transition-colors shadow-sm disabled:opacity-50"
+                    >
+                      Set PIN &amp; Unlock
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <h4 className="text-xs font-bold text-[#2F2B2D]">Protected Evidence Vault</h4>
+                    <p className="text-[10px] text-[#7B7280] mt-0.5">Enter your Vault PIN</p>
+                  </div>
+
+                  <div className="max-w-xs mx-auto flex gap-2">
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      placeholder="PIN"
+                      value={pinInput}
+                      onChange={(e) => setPinInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleUnlockVault()}
+                      className="w-full bg-white border border-[#E9D8DE] rounded-xl px-3 py-1.5 text-center text-xs font-mono text-[#2F2B2D] focus:outline-none focus:border-[#A70F43]"
+                    />
+                    <button
+                      onClick={handleUnlockVault}
+                      disabled={isVerifyingPin || !pinInput}
+                      className="px-3.5 py-1.5 bg-[#A70F43] hover:bg-[#8D0D39] text-white font-bold text-xs rounded-xl transition-colors shrink-0 shadow-sm disabled:opacity-50"
+                    >
+                      Unlock
+                    </button>
+                  </div>
+                  {pinError && <p className="text-[10px] text-[#A70F43] font-semibold max-w-xs mx-auto">{pinError}</p>}
+                </>
+              )}
             </div>
           ) : (
             /* Evidence Unlocked List */

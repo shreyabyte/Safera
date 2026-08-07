@@ -112,11 +112,44 @@ function gaussianKernel(distanceMeters: number, bandwidthMeters: number): number
 }
 
 /**
+ * How much darker/riskier this exact time of day makes things, before
+ * factoring in whether a given spot is actually well-lit. 1.0 = no change.
+ * Day and Dusk used to be mathematically identical (and so did Night and
+ * Late Night), because the old code only checked a binary isDark flag —
+ * this gives all four time periods a genuinely different value.
+ */
+function timeOfDayDarknessFactor(timeOfDay: TimeOfDay): number {
+  switch (timeOfDay) {
+    case 'Day':
+      return 1.0;
+    case 'Dusk':
+      return 1.12;
+    case 'Night':
+      return 1.3;
+    case 'Late Night':
+      return 1.45;
+    default:
+      return 1.0;
+  }
+}
+
+/**
  * Core risk computation shared by both the grid heatmap and the route-path
  * scorer below — computes real risk (0-100) at an arbitrary lat/lng from
  * every location's incident history and every report's severity/recency,
  * radiating outward with a Gaussian falloff. Kept as one function so the
  * heatmap and the route scorer never disagree about what "risky" means.
+ *
+ * Danger contributions are combined with a noisy-OR ("1 minus the product of
+ * each source's survival probability"), not a plain sum. A plain sum was the
+ * actual bug behind "everything renders as 100/100 red": each contribution
+ * is already bounded to [0,1], but with more than 2-3 locations/reports
+ * within the kernel's reach (very common — a handful of real OSM POIs is
+ * normal) their raw sum blows past 1.0 and gets clamped to the max, so a
+ * moderately-risky area with several nearby signals became visually
+ * identical to a genuinely dangerous one. Noisy-OR combines multiple
+ * partial-risk signals the way independent probabilities actually compose,
+ * so it saturates smoothly instead of overshooting after 3-4 contributions.
  */
 function computePointRisk(
   lat: number,
@@ -127,8 +160,18 @@ function computePointRisk(
   locationBandwidth: number,
   reportBandwidth: number
 ): number {
-  const isDark = timeOfDay === 'Night' || timeOfDay === 'Late Night';
-  let riskAccumulator = 0;
+  const darkness = timeOfDayDarknessFactor(timeOfDay);
+
+  // Noisy-OR accumulators: track "survival probability" (chance nothing bad
+  // applies) and multiply in each new source's (1 - contribution). Final
+  // danger = 1 - survival. Naturally bounded to [0,1) no matter how many
+  // sources contribute, unlike a running sum.
+  let dangerSurvival = 1;
+  // Safe Hub reports actively cool an area off — tracked as their own
+  // noisy-OR "safety" signal and used to temper (not just subtract from)
+  // the final danger score, so one Safe Hub report can't fully cancel out
+  // a real, separately-corroborated incident history.
+  let safetySurvival = 1;
 
   for (const loc of locations) {
     const distance = haversineDistanceMeters(lat, lng, loc.lat, loc.lng);
@@ -139,11 +182,16 @@ function computePointRisk(
     const incidentBoost = Math.min(1, loc.firCount * 0.06 + loc.recentSosCount * 0.12);
     let locationRisk = baseRisk * 0.7 + incidentBoost * 0.3;
 
-    if (isDark && loc.lightingStars <= 2) {
-      locationRisk = Math.min(1, locationRisk * 1.3);
-    }
+    // Continuous darkness boost: scales with how genuinely unlit the spot
+    // is (0 stars = full effect, 5 stars = none) instead of a hard <=2
+    // threshold, and now applies (to a smaller degree) at Dusk too, not
+    // just Night/Late Night.
+    const lightingDeficiency = (5 - loc.lightingStars) / 5;
+    const darkBoost = 1 + (darkness - 1) * lightingDeficiency;
+    locationRisk = Math.min(1, locationRisk * darkBoost);
 
-    riskAccumulator += locationRisk * kernel;
+    const contribution = Math.min(1, Math.max(0, locationRisk * kernel));
+    if (contribution > 0) dangerSurvival *= 1 - contribution;
   }
 
   for (const report of reports) {
@@ -155,10 +203,25 @@ function computePointRisk(
     const recency = recencyWeight(parseHoursAgo(report.timestamp));
     const confidence = report.trustScore / 100;
 
-    riskAccumulator += severity * recency * confidence * kernel;
+    // Reports also react to time of day, just more gently than a location's
+    // own lighting rating does (a report has no lighting field of its own).
+    const reportDarkBoost = severity > 0 ? 1 + (darkness - 1) * 0.5 : 1;
+
+    const raw = severity * recency * confidence * kernel * reportDarkBoost;
+    if (raw >= 0) {
+      const contribution = Math.min(1, raw);
+      if (contribution > 0) dangerSurvival *= 1 - contribution;
+    } else {
+      const contribution = Math.min(1, -raw);
+      if (contribution > 0) safetySurvival *= 1 - contribution;
+    }
   }
 
-  return Math.round(Math.min(100, Math.max(0, riskAccumulator * 100)));
+  const dangerRisk = 1 - dangerSurvival; // [0, 1)
+  const safetyReduction = 1 - safetySurvival; // [0, 1)
+  const finalRisk = Math.max(0, dangerRisk - safetyReduction * 0.6);
+
+  return Math.round(Math.min(100, Math.max(0, finalRisk * 100)));
 }
 
 function defaultBandwidths(locations: SafetyLocation[], reports: CommunityReport[]) {
