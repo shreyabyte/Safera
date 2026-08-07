@@ -30,12 +30,20 @@ import {
 interface RouteGeneratorProps {
   locations: SafetyLocation[];
   selectedLocationTarget?: SafetyLocation;
+  /**
+   * Called once selectedLocationTarget has been consumed by the auto-route
+   * effect below. Lets the parent clear its own state so the target doesn't
+   * outlive this trip and silently re-trigger a route next time this
+   * component mounts (e.g. navigating back to the Routes tab normally).
+   */
+  onTargetConsumed?: () => void;
   onStartNavigation: (route: RouteOption) => void;
 }
 
 export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
   locations,
   selectedLocationTarget,
+  onTargetConsumed,
   onStartNavigation,
 }) => {
   const [origin, setOrigin] = useState("");
@@ -273,6 +281,11 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
     if (!selectedLocationTarget || !originReady) return;
     if (lastAutoRoutedTargetId.current === selectedLocationTarget.id) return;
     lastAutoRoutedTargetId.current = selectedLocationTarget.id;
+
+    // Tell the parent this target has been used, so it clears its own
+    // selectedRouteTarget state and this exact auto-route can't fire again
+    // just from remounting (e.g. leaving and returning to this tab).
+    onTargetConsumed?.();
 
     setDestination(selectedLocationTarget.name);
 

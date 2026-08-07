@@ -116,6 +116,19 @@ export default function App() {
     setActiveTab('routes');
   };
 
+  // RouteGenerator calls this once it has consumed selectedRouteTarget and
+  // auto-generated a route for it. Without this, selectedRouteTarget stays
+  // set in App's state forever — and because RouteGenerator is unmounted
+  // whenever activeTab !== 'routes' (conditionally rendered below), simply
+  // switching tabs and back to "Routes" via the navbar remounts it with a
+  // fresh internal ref guard, re-triggering the SAME auto-route generation
+  // even though the user never clicked "Route there" / "Generate Safest
+  // Route Here" again. Clearing the target here is what makes automatic
+  // routing fire only in response to an explicit route-me-there action.
+  const handleRouteTargetConsumed = () => {
+    setSelectedRouteTarget(undefined);
+  };
+
   const handleStartNavigation = (route: RouteOption) => {
     alert(`Starting Safera Live Guided Navigation for "${route.name}". Live tracking link active.`);
   };
@@ -160,6 +173,7 @@ export default function App() {
             <RouteGenerator
               locations={locations}
               selectedLocationTarget={selectedRouteTarget}
+              onTargetConsumed={handleRouteTargetConsumed}
               onStartNavigation={handleStartNavigation}
             />
           )}
