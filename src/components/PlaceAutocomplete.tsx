@@ -14,7 +14,7 @@ export const PlaceAutocomplete: React.FC<PlaceAutocompleteProps> = ({
 }) => {
   const [suggestions, setSuggestions] = useState<GeocodedPlace[]>([]);
   const [isOpen, setIsOpen] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const justSelectedRef = useRef(false); // true right after a click-select
 
   useEffect(() => {
