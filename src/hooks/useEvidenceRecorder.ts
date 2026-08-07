@@ -182,13 +182,53 @@ export function useEvidenceRecorder(onSaved: (item: EvidenceItem) => void): Evid
     drawLoopIdRef.current = requestAnimationFrame(draw);
   };
 
-  /** Tries to open both cameras at once. Returns null if dual capture isn't viable, so the caller can fall back. */
+  /**
+   * Waits for a source <video> element to actually be delivering frames
+   * (readyState past HAVE_CURRENT_DATA and a real videoWidth) and for its
+   * underlying track to still be live. Resolves false on timeout instead
+   * of throwing, since a timeout here just means "this camera didn't pan
+   * out" — not a hard error.
+   */
+  const waitForLiveFrames = (el: HTMLVideoElement, track: MediaStreamTrack, timeoutMs: number): Promise<boolean> => {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const poll = () => {
+        if (track.readyState === 'ended') {
+          resolve(false);
+          return;
+        }
+        if (el.readyState >= 2 && el.videoWidth > 0 && !track.muted) {
+          resolve(true);
+          return;
+        }
+        if (Date.now() - start > timeoutMs) {
+          resolve(false);
+          return;
+        }
+        requestAnimationFrame(poll);
+      };
+      poll();
+    });
+  };
+
+  /**
+   * Tries to open both cameras at once. Returns null if dual capture isn't
+   * viable, so the caller can fall back. This does more than count video
+   * input devices: on most phones (iOS Safari especially, plus a lot of
+   * Android browsers/hardware) the camera stack only supports ONE active
+   * camera stream at a time. In that case the second getUserMedia() call
+   * often does NOT throw — instead the OS silently reclaims the first
+   * camera, so its track goes muted/ended a moment later while the second
+   * keeps working. That shows up as "front still records, rear doesn't."
+   * To catch that, we open both, then actually wait for live frames on
+   * both before committing — if either one doesn't pan out, we tear
+   * everything down and let the caller fall back to single-camera mode.
+   */
   const tryStartDualCamera = async (): Promise<MediaStream | null> => {
     const inputCount = await countVideoInputs();
     if (inputCount < 2) return null;
 
     let rearStream: MediaStream;
-    let frontStream: MediaStream;
     try {
       rearStream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { exact: 'environment' } },
@@ -199,24 +239,54 @@ export function useEvidenceRecorder(onSaved: (item: EvidenceItem) => void): Evid
       return null;
     }
 
+    let frontStream: MediaStream;
     try {
       frontStream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { exact: 'user' } },
         audio: false, // single shared audio track (from the rear stream) avoids echo/double-mic issues
       });
     } catch (err) {
-      console.log('Front camera unavailable for dual capture, falling back to rear-only:', err);
+      console.log('Front camera unavailable for dual capture, falling back to single camera:', err);
       stopAllTracks(rearStream);
+      return null;
+    }
+
+    const rearEl = makeSourceVideoEl(rearStream);
+    const frontEl = makeSourceVideoEl(frontStream);
+
+    const rearTrack = rearStream.getVideoTracks()[0];
+    const frontTrack = frontStream.getVideoTracks()[0];
+
+    // Warm-up: confirm both cameras are genuinely delivering frames
+    // simultaneously before treating this as real dual capture. On a
+    // device that can only run one camera at a time, this is where that
+    // gets caught — rearTrack goes muted/ended once frontStream opens.
+    const [rearLive, frontLive] = await Promise.all([
+      waitForLiveFrames(rearEl, rearTrack, 1500),
+      waitForLiveFrames(frontEl, frontTrack, 1500),
+    ]);
+
+    if (!rearLive || !frontLive) {
+      console.log(
+        `Dual camera warm-up failed (rear live: ${rearLive}, front live: ${frontLive}) — this device likely only supports one active camera stream. Falling back to single camera.`,
+      );
+      stopAllTracks(rearStream);
+      stopAllTracks(frontStream);
       return null;
     }
 
     rearStreamRef.current = rearStream;
     frontStreamRef.current = frontStream;
-
-    const rearEl = makeSourceVideoEl(rearStream);
-    const frontEl = makeSourceVideoEl(frontStream);
     rearVideoElRef.current = rearEl;
     frontVideoElRef.current = frontEl;
+
+    // Keep watching after commit: if the OS reclaims a camera mid-recording
+    // (some devices allow a brief dual window before enforcing exclusivity),
+    // at least surface it loudly instead of silently recording a dead frame.
+    rearTrack.addEventListener('mute', () => console.warn('Rear camera track muted mid-recording — device may have reclaimed the camera.'));
+    rearTrack.addEventListener('ended', () => console.warn('Rear camera track ended mid-recording.'));
+    frontTrack.addEventListener('mute', () => console.warn('Front camera track muted mid-recording — device may have reclaimed the camera.'));
+    frontTrack.addEventListener('ended', () => console.warn('Front camera track ended mid-recording.'));
 
     const canvas = document.createElement('canvas');
     canvas.width = 1280;
@@ -259,6 +329,34 @@ export function useEvidenceRecorder(onSaved: (item: EvidenceItem) => void): Evid
     }
   };
 
+  /**
+   * Fallback path specifically for when a dual-camera attempt didn't pan
+   * out. Tries the rear camera first regardless of the current
+   * `cameraMode` toggle — rear is the primary evidence angle — then falls
+   * back to front if rear genuinely isn't available (e.g. front-only
+   * devices, or a permission prompt only granted for one lens).
+   */
+  const startSingleCameraPreferRear = async (): Promise<MediaStream | null> => {
+    const attempts: Array<'rear' | 'front'> = ['rear', 'front'];
+    for (const mode of attempts) {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) return null;
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: mode === 'front' ? 'user' : 'environment' },
+          audio: true,
+        });
+        primaryStreamRef.current = stream;
+        if (videoRef.current) videoRef.current.srcObject = stream;
+        setCameraMode(mode);
+        setIsDualCamera(false);
+        return stream;
+      } catch (err) {
+        console.log(`${mode} camera unavailable during dual-capture fallback:`, err);
+      }
+    }
+    return null;
+  };
+
   const startRecording = async () => {
     if (isRecording) return; // already recording — SOS + manual button both call this safely
 
@@ -267,7 +365,7 @@ export function useEvidenceRecorder(onSaved: (item: EvidenceItem) => void): Evid
     if (recordType === 'video') {
       recordingStream = await tryStartDualCamera();
       if (!recordingStream) {
-        recordingStream = await startSingleCamera();
+        recordingStream = await startSingleCameraPreferRear();
       }
     } else {
       // Audio-only mode never needs dual camera compositing.
