@@ -164,4 +164,6 @@ export interface UserProfile {
 export interface StoredAccount {
   profile: UserProfile;
   passwordHash: string;
+  /** Same SHA-256 approach as passwordHash, scoped to the Evidence Vault PIN. Undefined until the user sets one on first vault visit. */
+  vaultPinHash?: string;
 }
