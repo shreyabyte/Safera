@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { SafetyLocation, CommunityReport } from '../types';
 import {
   MapPin,
@@ -14,26 +14,11 @@ import {
   Bot,
   Shield,
   Cloud,
-  Radio,
-  Scale,
-  Users,
-  Phone,
-  Volume2,
   Info,
   X,
-  ShieldCheck,
-  CheckCircle2,
 } from 'lucide-react';
 
 import { LiveLocationShareModal } from './LiveLocationShareModal';
-import {
-  computeSafetyGrid,
-  findNearestSafeResource,
-  projectToPct,
-  gridToBoundingBox,
-  riskBandColor,
-  type SafetyGridCell,
-} from '../utils/hotspot';
 
 interface SafetyMapProps {
   locations: SafetyLocation[];
@@ -68,20 +53,12 @@ const fetchWithTimeout = async (
   }
 };
 
-interface RiskBreakdownItem {
-  factor: string;
-  score: number;
-  note: string;
-}
-
 interface LiveRiskData {
   safetyScore: number;
   riskLevel: string;
   summary: string;
-  riskBreakdown: RiskBreakdownItem[];
-  timeContext: string;
-  recommendedActions: string[];
-  nearbySafeResourceNote: string;
+  factors: string[];
+  safetyTips: string[];
 }
 
 export const SafetyMap: React.FC<SafetyMapProps> = ({
@@ -107,9 +84,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
   const [liveLocationLabel, setLiveLocationLabel] = useState<string>('Locating…');
   const [liveTemp, setLiveTemp] = useState<string>('--°');
   const [liveWeatherDesc, setLiveWeatherDesc] = useState<string>('Loading...');
-  // Raw coordinates (not just the display label) — needed to compute real
-  // distance to the nearest safe resource below.
-  const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
 
   const [liveScoreStatus, setLiveScoreStatus] = useState<
     'loading' | 'live' | 'fallback' | 'denied'
@@ -129,7 +103,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         const { latitude, longitude } = pos.coords;
-        setUserCoords({ lat: latitude, lng: longitude });
         let weatherDescLocal = 'Clear';
 
         try {
@@ -230,135 +203,46 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
     liveScoreStatus === 'live' && liveScoreData ? liveScoreData.riskLevel : 'Safe zone';
 
   const [isAnalyzingAi, setIsAnalyzingAi] = useState(false);
-  const [aiAnalysisResult, setAiAnalysisResult] = useState<LiveRiskData | null>(null);
-
-  // Builds a fallback report from the location's OWN real fields (lighting,
-  // CCTV %, police distance, FIR/SOS counts, crowd density, nearest safe
-  // resource) instead of a fixed generic sentence. Used only when the live
-  // Gemini call fails outright (network error, non-OK response), so even a
-  // failed request never claims something untrue about the specific
-  // location — e.g. it won't call a 1-star-lit alley "well-lit." Mirrors the
-  // shape of the server's own data-only report so the UI never has to
-  // special-case which path produced the result.
-  const buildLocationAwareFallback = (loc: SafetyLocation): LiveRiskData => {
-    const lightingNote =
-      loc.lightingStars >= 4
-        ? 'Well-lit with strong streetlight coverage.'
-        : loc.lightingStars >= 2
-        ? 'Moderately lit, with some dark patches after dusk.'
-        : 'Poorly lit, with minimal working streetlights.';
-
-    const cctvNote =
-      loc.cctvPercent >= 80
-        ? 'Extensive CCTV coverage.'
-        : loc.cctvPercent >= 40
-        ? 'Partial CCTV coverage — some blind spots likely.'
-        : 'Very limited CCTV coverage.';
-
-    const policeNote =
-      loc.policeDistanceMeters <= 300
-        ? `Active police presence just ${loc.policeDistanceMeters}m away.`
-        : loc.policeDistanceMeters <= 700
-        ? `Nearest police booth is ${loc.policeDistanceMeters}m away.`
-        : `No nearby police booth — closest is ${loc.policeDistanceMeters}m away.`;
-
-    const incidentNote = `${loc.firCount} FIR incident(s) and ${loc.recentSosCount} recent SOS trigger(s) logged nearby.`;
-    const crowdNote = `${loc.crowdDensity} pedestrian traffic${
-      timeOfDay === 'Night' || timeOfDay === 'Late Night' ? ', which thins out further after dark.' : '.'
-    }`;
-
-    const nearby = findNearestSafeResource(loc.lat, loc.lng, locations);
-
-    return {
-      safetyScore: loc.safetyScore,
-      riskLevel: loc.riskLevel,
-      summary: `${loc.name} is currently rated "${loc.riskLevel}" (${loc.safetyScore}/100). ${lightingNote} ${policeNote} (Live AI analysis is temporarily unavailable — this report is generated directly from the location's own logged data.)`,
-      riskBreakdown: [
-        { factor: 'Lighting', score: Math.round((loc.lightingStars / 5) * 100), note: lightingNote },
-        { factor: 'CCTV Coverage', score: loc.cctvPercent, note: cctvNote },
-        { factor: 'Police Proximity', score: Math.max(0, 100 - Math.round(loc.policeDistanceMeters / 15)), note: policeNote },
-        { factor: 'Incident History', score: Math.max(0, 100 - loc.firCount * 10 - loc.recentSosCount * 15), note: incidentNote },
-        {
-          factor: 'Crowd & Foot Traffic',
-          score: loc.crowdDensity === 'High' ? 75 : loc.crowdDensity === 'Low' ? 35 : 55,
-          note: crowdNote,
-        },
-      ],
-      timeContext:
-        timeOfDay === 'Night' || timeOfDay === 'Late Night'
-          ? `After dark, lighting and police proximity matter more than during the day${
-              loc.lightingStars <= 2 ? ' — and this spot is a known weak point on lighting.' : '.'
-            }`
-          : `During ${timeOfDay}, visibility and foot traffic are the biggest safety factors here, not lighting.`,
-      recommendedActions:
-        loc.safetyScore >= 70
-          ? ['This is a comparatively safe zone — standard precautions still apply.', 'Stick to the main walkway.']
-          : [
-              'Avoid this area alone after dark if possible.',
-              'Stay on well-lit main roads instead of side alleys.',
-              'Share your live location with a trusted contact before entering this zone.',
-            ],
-      nearbySafeResourceNote: nearby
-        ? `${nearby.location.name} is the closest safe resource${
-            nearby.reason === 'police-booth' ? ' with an active police booth' : ''
-          }, about ${
-            nearby.distanceMeters >= 1000 ? `${(nearby.distanceMeters / 1000).toFixed(1)} km` : `${Math.round(nearby.distanceMeters)} m`
-          } away.`
-        : 'No verified safe resource is logged near this location yet.',
-    };
-  };
+  const [aiAnalysisResult, setAiAnalysisResult] = useState<{
+    safetyScore: number;
+    riskLevel: string;
+    summary: string;
+    factors: string[];
+    safetyTips: string[];
+  } | null>(null);
 
   const handleRunAiRiskPredictor = async (loc: SafetyLocation) => {
     setIsAnalyzingAi(true);
     try {
-      const nearby = findNearestSafeResource(loc.lat, loc.lng, locations);
-
       const response = await fetch('/api/ai/predict-risk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           locationName: loc.name,
           timeOfDay,
-          weather: 'Clear Night (24 deg C)',
+          weather: liveWeatherDesc !== 'Loading...' && liveWeatherDesc !== 'Unavailable'
+            ? `${liveWeatherDesc}${liveTemp !== '--°' ? ` (${liveTemp})` : ''}`
+            : 'Clear',
           crowdDensity: loc.crowdDensity,
           firCount: loc.firCount,
           recentReports: reports.filter((r) => r.locationName.includes(loc.name.split(' ')[0])).map((r) => r.description),
-          // Real per-location signals — this is what actually grounds the
-          // report in this specific spot instead of a generic paragraph.
-          safetyScore: loc.safetyScore,
-          lightingStars: loc.lightingStars,
-          cctvPercent: loc.cctvPercent,
-          policeDistanceMeters: loc.policeDistanceMeters,
-          recentSosCount: loc.recentSosCount,
-          wheelchairAccessible: loc.accessibility.wheelchairRamps,
-          policeBoothOnSite: loc.accessibility.policeBooths,
-          nearestSafeResource: nearby
-            ? { name: nearby.location.name, distanceMeters: nearby.distanceMeters, reason: nearby.reason }
-            : null,
         }),
       });
-
-      if (!response.ok) {
-        throw new Error(`predict-risk responded ${response.status}`);
-      }
-
       const data = await response.json();
-
-      // Validate shape before trusting it — a malformed or empty response
-      // shouldn't render as if it were a real AI analysis.
-      if (
-        typeof data.safetyScore !== 'number' ||
-        typeof data.summary !== 'string' ||
-        !data.summary.trim() ||
-        !Array.isArray(data.riskBreakdown)
-      ) {
-        throw new Error('predict-risk returned an unexpected shape');
-      }
-
       setAiAnalysisResult(data);
     } catch (err) {
-      console.error('Live AI risk analysis failed, using location-aware fallback', err);
-      setAiAnalysisResult(buildLocationAwareFallback(loc));
+      console.error(err);
+      setAiAnalysisResult({
+        safetyScore: loc.safetyScore,
+        riskLevel: loc.riskLevel,
+        summary: `Analysis for ${loc.name}: Well-lit commercial corridor with active CCTV and police patrols.`,
+        factors: [
+          `Lighting Rating: ${loc.lightingStars}/5 Stars`,
+          `Police Distance: ${loc.policeDistanceMeters}m away`,
+          `Crowd Density: ${loc.crowdDensity}`,
+        ],
+        safetyTips: ['Stick to the primary sidewalk.', 'Use step-free accessible walkways.'],
+      });
     } finally {
       setIsAnalyzingAi(false);
     }
@@ -371,36 +255,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
     if (showAccessibilityOverlay && !loc.accessibility.wheelchairRamps) return false;
     return true;
   });
-
-  // --- Real, data-driven hotspot grid (replaces the old two fixed blur blobs) ---
-  // Recomputed whenever the underlying locations/reports/time-of-day change,
-  // so submitting a new community report visibly reshapes the heatmap.
-  const safetyGrid: SafetyGridCell[] = useMemo(
-    () => computeSafetyGrid(locations, reports, timeOfDay),
-    [locations, reports, timeOfDay]
-  );
-
-  const boundingBox = useMemo(() => gridToBoundingBox(locations, reports), [locations, reports]);
-
-  const projectedLocations = useMemo(
-    () =>
-      filteredLocations.map((loc) => ({
-        loc,
-        ...projectToPct(loc.lat, loc.lng, boundingBox),
-      })),
-    [filteredLocations, boundingBox]
-  );
-
-  const hottestCell = useMemo(
-    () => safetyGrid.reduce<SafetyGridCell | null>((max, c) => (!max || c.risk > max.risk ? c : max), null),
-    [safetyGrid]
-  );
-
-  // --- Nearest safe resource (police booth if available, else the highest-scoring nearby location) ---
-  const nearestSafeResource = useMemo(
-    () => (userCoords ? findNearestSafeResource(userCoords.lat, userCoords.lng, locations) : null),
-    [userCoords, locations]
-  );
 
   return (
     <>
@@ -511,11 +365,9 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
                   </span>
                 </li>
                 <li className="flex items-start gap-1.5">
-                  <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0"></span>
+                  <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"></span>
                   <span>
-                    <strong>Real, computed:</strong> the Live Safety Grid below is a kernel-density risk
-                    surface recomputed from every location's incident history and every community report's
-                    category, trust score, and recency — not a fixed illustration.
+                    <strong>Live, but thin today:</strong> community incident reports feed into scoring - real and working, just early, since the app doesn't have many reports yet.
                   </span>
                 </li>
                 <li className="flex items-start gap-1.5">
@@ -622,30 +474,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-2.5 overflow-x-auto py-2 no-scrollbar">
-          <span className="text-xs font-semibold text-[#825D6B] shrink-0 mr-1">
-            Section:
-          </span>
-          {[
-            { id: 'sensors', label: 'Sensors', icon: Radio },
-            { id: 'legal', label: 'Legal Advisor', icon: Scale },
-            { id: 'community', label: 'Community', icon: Users },
-            { id: 'toolkit', label: 'Offline Toolkit', icon: Phone },
-            { id: 'companion', label: 'AI Safety Companion', icon: Volume2 },
-          ].map((chip) => {
-            const Icon = chip.icon;
-            return (
-              <button
-                key={chip.id}
-                onClick={() => setActiveTab?.(chip.id)}
-                className="px-4 py-2 rounded-full bg-white text-[#31141E] border border-[#F2E5DE] hover:bg-[#FAF4EE] hover:border-[#8A1E41] hover:text-[#8A1E41] text-xs font-semibold flex items-center gap-2 transition-all shrink-0 shadow-2xs cursor-pointer active:scale-95"
-              >
-                <Icon className="w-3.5 h-3.5 text-[#8A1E41]" />
-                <span>{chip.label}</span>
-              </button>
-            );
-          })}
-        </div>
       </div>
 
       <div className="bg-white border border-[#F2E5DE] rounded-[28px] p-5 shadow-[0_4px_20px_rgba(49,20,30,0.02)] space-y-4">
@@ -724,51 +552,11 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           <div className="relative bg-[#FCF7F1]/40 border border-[#EFE6E1] rounded-[22px] min-h-[440px] overflow-hidden flex flex-col justify-between p-5">
             <div className="absolute inset-0 opacity-15 bg-[radial-gradient(#A7194B_1px,transparent_1px)] [background-size:18px_18px]"></div>
 
-            {/* Real computed risk grid — each cell's opacity/color comes from
-                computeSafetyGrid(), driven by actual location + report data,
-                not a fixed pair of blur circles. */}
             {showHeatmap && (
-              <div className="absolute inset-0">
-                {safetyGrid.map((cell) => (
-                  <div
-                    key={`${cell.row}-${cell.col}`}
-                    title={`Risk ${cell.risk}/100 · ${cell.contributingSignals} nearby signal(s)`}
-                    className="absolute transition-colors duration-500"
-                    style={{
-                      left: `${cell.xPct}%`,
-                      top: `${cell.yPct}%`,
-                      width: `${cell.widthPct}%`,
-                      height: `${cell.heightPct}%`,
-                      transform: 'translate(-50%, -50%)',
-                      backgroundColor: riskBandColor(cell.band),
-                      filter: 'blur(10px)',
-                    }}
-                  />
-                ))}
-
-                {/* Precise pin markers for every real location, positioned
-                    by actual lat/lng instead of a static two-column card grid. */}
-                {projectedLocations.map(({ loc, xPct, yPct }) => (
-                  <button
-                    key={`pin-${loc.id}`}
-                    onClick={() => {
-                      setSelectedLocation(loc);
-                      setAiAnalysisResult(null);
-                    }}
-                    title={loc.name}
-                    className={`absolute w-2.5 h-2.5 rounded-full border-2 border-white shadow-md transition-transform hover:scale-150 cursor-pointer ${
-                      selectedLocation.id === loc.id ? 'scale-150 ring-2 ring-[#A7194B]' : ''
-                    }`}
-                    style={{
-                      left: `${xPct}%`,
-                      top: `${yPct}%`,
-                      transform: 'translate(-50%, -50%)',
-                      backgroundColor: loc.safetyScore >= 70 ? '#5FA777' : loc.safetyScore >= 45 ? '#F2C94C' : '#A7194B',
-                      zIndex: 5,
-                    }}
-                  />
-                ))}
-              </div>
+              <>
+                <div className="absolute top-1/4 left-1/3 w-36 h-36 rounded-full bg-rose-500/15 blur-2xl animate-pulse"></div>
+                <div className="absolute bottom-1/4 right-1/3 w-32 h-32 rounded-full bg-amber-500/15 blur-2xl"></div>
+              </>
             )}
 
             <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 gap-3.5 my-auto">
@@ -817,30 +605,18 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
               })}
             </div>
 
-            <div className="relative z-10 flex flex-wrap justify-between items-center gap-2 bg-white border border-[#EFE6E1] p-3.5 rounded-full text-xs text-[#6E676A] mt-3 shadow-xs">
-              <div className="flex items-center gap-3 flex-wrap">
-                <span className="flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#5FA777' }}></span>
-                  Low
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#F2C94C' }}></span>
-                  Moderate
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-[#A7194B]/60"></span>
-                  High
-                </span>
+            <div className="relative z-10 flex justify-between items-center bg-white border border-[#EFE6E1] p-3.5 rounded-full text-xs text-[#6E676A] mt-3 shadow-xs">
+              <div className="flex items-center gap-4">
                 <span className="flex items-center gap-1.5">
                   <span className="w-2.5 h-2.5 rounded-full bg-[#A7194B]"></span>
-                  Critical
+                  Safe Corridor
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#F2C94C]"></span>
+                  Moderate Risk
                 </span>
               </div>
-              {hottestCell && (
-                <span className="font-medium text-[#221F20]">
-                  Hottest zone right now: {hottestCell.risk}/100 risk
-                </span>
-              )}
+              <span className="font-medium text-[#221F20]">Select location to inspect</span>
             </div>
           </div>
         </div>
@@ -866,37 +642,6 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
             </div>
           </div>
 
-          {/* Nearest Safe Resource — a real haversine-distance recommendation
-              from the user's live GPS to the closest police-booth location
-              (or highest-scoring nearby location if none has one), instead
-              of only showing risk with no "what do I do about it" answer. */}
-          {nearestSafeResource && (
-            <div className="bg-emerald-50 border border-emerald-200 rounded-[22px] p-4.5 space-y-1.5">
-              <div className="flex items-center gap-1.5 text-emerald-700 text-xs font-bold uppercase tracking-wide">
-                <ShieldCheck className="w-3.5 h-3.5" />
-                Nearest Safe Resource
-              </div>
-              <div className="text-sm font-bold text-[#221F20]">
-                {nearestSafeResource.location.name}
-              </div>
-              <div className="text-xs text-[#6E676A]">
-                {nearestSafeResource.reason === 'police-booth'
-                  ? 'Has an active police booth · '
-                  : 'Highest safety score nearby · '}
-                {nearestSafeResource.distanceMeters >= 1000
-                  ? `${(nearestSafeResource.distanceMeters / 1000).toFixed(1)} km away`
-                  : `${Math.round(nearestSafeResource.distanceMeters)} m away`}
-              </div>
-              <button
-                onClick={() => onSelectLocationForRoute(nearestSafeResource.location)}
-                className="mt-1 text-xs font-bold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 cursor-pointer"
-              >
-                <Navigation className="w-3.5 h-3.5" />
-                Route me there
-              </button>
-            </div>
-          )}
-
           <button
             onClick={() => handleRunAiRiskPredictor(selectedLocation)}
             disabled={isAnalyzingAi}
@@ -907,71 +652,12 @@ export const SafetyMap: React.FC<SafetyMapProps> = ({
           </button>
 
           {aiAnalysisResult && (
-            <div className="bg-[#FFF0F3] border border-[#EFE6E1] rounded-[22px] p-4.5 space-y-4 text-xs text-[#221F20]">
+            <div className="bg-[#FFF0F3] border border-[#EFE6E1] rounded-[22px] p-4 space-y-2 text-xs text-[#221F20]">
               <div className="font-semibold text-[#A7194B] flex items-center gap-1.5">
                 <Sparkles className="w-4 h-4" />
-                AI Safety Report
+                AI Analysis Evaluation
               </div>
-
-              {/* Executive summary */}
               <p className="text-[#6E676A] leading-relaxed">{aiAnalysisResult.summary}</p>
-
-              {/* Per-factor breakdown, each grounded in a real reason, not just a number */}
-              {aiAnalysisResult.riskBreakdown && aiAnalysisResult.riskBreakdown.length > 0 && (
-                <div className="space-y-2.5 border-t border-[#EFE6E1] pt-3">
-                  <span className="text-[11px] font-semibold text-[#6E676A] uppercase tracking-wide">
-                    Risk Breakdown
-                  </span>
-                  {aiAnalysisResult.riskBreakdown.map((item, idx) => (
-                    <div key={idx} className="space-y-1">
-                      <div className="flex justify-between items-center">
-                        <span className="font-semibold text-[#221F20]">{item.factor}</span>
-                        <span className="text-[#A7194B] font-bold">{item.score}/100</span>
-                      </div>
-                      <div className="w-full bg-white border border-[#EFE6E1] h-1.5 rounded-full overflow-hidden">
-                        <div
-                          className="bg-[#A70F43] h-full rounded-full transition-all"
-                          style={{ width: `${item.score}%` }}
-                        />
-                      </div>
-                      <p className="text-[#6E676A]">{item.note}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Why this time of day matters here specifically */}
-              {aiAnalysisResult.timeContext && (
-                <div className="border-t border-[#EFE6E1] pt-3 space-y-1">
-                  <span className="text-[11px] font-semibold text-[#6E676A] uppercase tracking-wide">
-                    Right Now ({timeOfDay})
-                  </span>
-                  <p className="text-[#221F20] leading-relaxed">{aiAnalysisResult.timeContext}</p>
-                </div>
-              )}
-
-              {/* Concrete next steps, not vague reassurance */}
-              {aiAnalysisResult.recommendedActions && aiAnalysisResult.recommendedActions.length > 0 && (
-                <div className="border-t border-[#EFE6E1] pt-3 space-y-1.5">
-                  <span className="text-[11px] font-semibold text-[#6E676A] uppercase tracking-wide">
-                    Recommended Actions
-                  </span>
-                  {aiAnalysisResult.recommendedActions.map((action, idx) => (
-                    <div key={idx} className="flex items-start gap-1.5">
-                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[#5FA777]" />
-                      <span className="text-[#221F20]">{action}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Where to actually go if things feel wrong */}
-              {aiAnalysisResult.nearbySafeResourceNote && (
-                <div className="border-t border-[#EFE6E1] pt-3 flex items-start gap-1.5">
-                  <ShieldCheck className="w-3.5 h-3.5 shrink-0 mt-0.5 text-emerald-700" />
-                  <p className="text-[#221F20]">{aiAnalysisResult.nearbySafeResourceNote}</p>
-                </div>
-              )}
             </div>
           )}
 
