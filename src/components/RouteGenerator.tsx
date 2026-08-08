@@ -13,6 +13,7 @@ import {
   RouteStep,
 } from "../lib/routing";
 import { scoreRoutePath, TimeOfDay as GridTimeOfDay } from "../utils/hotspot";
+import { fetchNearbyPlaces, placesToSafetyLocations } from "../utils/overpass";
 import { CommunityReport } from "../types";
 
 import {
@@ -92,6 +93,37 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
         `OSRM found ${realRoutes.length} distinct route(s) for this trip.`,
       );
 
+      // The `locations` prop is only the app's small static seed dataset
+      // (a handful of fixed points around one city). Scoring against just
+      // that meant every real route far from those points got the exact
+      // same fallback numbers — Safety 100/100, 60% lighting, 0%
+      // accessibility every single time, since nothing was ever "nearby."
+      // Pull real police/hospital/pharmacy/market/civic-building data from
+      // OpenStreetMap around this specific route's actual midpoint instead,
+      // the same way the Live Safety Grid already does — so scoring
+      // reflects wherever the user is actually walking, not just the seed
+      // dataset's home city.
+      const midLat = (originPlace.lat + destinationPlace.lat) / 2;
+      const midLng = (originPlace.lng + destinationPlace.lng) / 2;
+      const routeRadiusMeters = Math.min(
+        12000,
+        Math.max(2000, Math.ceil(primaryRoute.distanceMeters / 2) + 800),
+      );
+
+      let routeAreaLocations = locations;
+      try {
+        const nearby = await fetchNearbyPlaces(midLat, midLng, routeRadiusMeters);
+        if (nearby.places.length > 0) {
+          const liveLocations = placesToSafetyLocations(nearby.places, midLat, midLng);
+          routeAreaLocations = [...locations, ...liveLocations];
+        }
+      } catch (err) {
+        console.warn(
+          "Live place lookup for route scoring failed, scoring against seed location data only:",
+          err,
+        );
+      }
+
       const res = await fetch("/api/ai/analyze-route", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -115,7 +147,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
           : "Night";
 
       const assessedRoutes = realRoutes.map((r) =>
-        scoreRoutePath(r.coordinates, locations, reports, gridTimeOfDay),
+        scoreRoutePath(r.coordinates, routeAreaLocations, reports, gridTimeOfDay),
       );
 
       if (data.routes && Array.isArray(data.routes) && data.routes.length > 0) {

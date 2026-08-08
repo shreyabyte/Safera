@@ -486,6 +486,7 @@ export function useEvidenceRecorder(onSaved: (item: EvidenceItem) => void): Evid
         mediaUrl: localUrl,
         isEncrypted,
         isCloudBackedUp,
+        dualCamera: wasDualCamera,
       };
 
       onSaved(newEntry);
