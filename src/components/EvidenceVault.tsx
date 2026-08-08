@@ -324,6 +324,12 @@ export const EvidenceVault: React.FC<EvidenceVaultProps> = ({ evidenceList, reco
                         <span className="text-[9px] px-1.5 py-0.2 rounded bg-[#A70F43] text-white font-mono font-bold">
                           {item.type.toUpperCase()}
                         </span>
+                        {item.dualCamera && (
+                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-[#2F2B2D] text-white font-mono font-bold flex items-center gap-0.5">
+                            <Video className="w-2.5 h-2.5" />
+                            DUAL CAM
+                          </span>
+                        )}
                       </div>
                       <div className="text-[#7B7280] text-[10px] mt-0.5">
                         {item.timestamp} • {item.locationName}

@@ -555,6 +555,7 @@ interface EvidenceRecord {
   lat: number | null;
   lng: number | null;
   storedAt: string;
+  dualCamera: boolean;
 }
 
 // In-memory index — resets on server restart, same caveat as the
@@ -565,7 +566,7 @@ const evidenceIndex = new Map<string, EvidenceRecord>();
 
 app.post('/api/evidence/upload', (req, res) => {
   try {
-    const { fileName, mimeType, encryptedBase64, ivBase64, sha256Hash, capturedAt, lat, lng } = req.body || {};
+    const { fileName, mimeType, encryptedBase64, ivBase64, sha256Hash, capturedAt, lat, lng, dualCamera } = req.body || {};
 
     if (typeof encryptedBase64 !== 'string' || typeof ivBase64 !== 'string' || typeof sha256Hash !== 'string') {
       return res.status(400).json({ error: 'encryptedBase64, ivBase64 and sha256Hash (strings) are required' });
@@ -585,10 +586,11 @@ app.post('/api/evidence/upload', (req, res) => {
       lat: typeof lat === 'number' ? lat : null,
       lng: typeof lng === 'number' ? lng : null,
       storedAt: new Date().toISOString(),
+      dualCamera: dualCamera === true,
     };
     evidenceIndex.set(id, record);
 
-    return res.status(201).json({ id, sizeBytes: cipherBuffer.length, storedAt: record.storedAt });
+    return res.status(201).json({ id, sizeBytes: cipherBuffer.length, storedAt: record.storedAt, dualCamera: record.dualCamera });
   } catch (error: any) {
     console.error('Error in evidence upload:', error);
     return res.status(500).json({ error: error.message || 'Evidence upload failed' });

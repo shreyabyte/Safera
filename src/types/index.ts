@@ -98,6 +98,8 @@ export interface EvidenceItem {
   mediaUrl: string;
   isEncrypted: boolean;
   isCloudBackedUp: boolean;
+  /** True if this recording composited both front and rear cameras (see useEvidenceRecorder.ts). Undefined for older entries recorded before this field existed. */
+  dualCamera?: boolean;
 }
 
 export interface VitalSignData {
