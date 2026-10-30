@@ -95,7 +95,7 @@ export const LiveSafetyMapView: React.FC<LiveSafetyMapViewProps> = ({
     <div className={`relative w-full ${heightClassName} rounded-[22px] overflow-hidden border border-[#EFE6E1]`}>
       <MapContainer center={center} zoom={15} scrollWheelZoom style={{ height: '100%', width: '100%' }}>
         <LayersControl position="topright">
-          <LayersControl.BaseLayer checked name="Clean (Smooth Zoom)">
+          <LayersControl.BaseLayer name="Clean (Smooth Zoom)">
             <TileLayer
               attribution="&copy; OpenStreetMap contributors &copy; CARTO"
               url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
@@ -103,7 +103,7 @@ export const LiveSafetyMapView: React.FC<LiveSafetyMapViewProps> = ({
               maxZoom={19}
             />
           </LayersControl.BaseLayer>
-          <LayersControl.BaseLayer name="Detailed (More Labels)">
+          <LayersControl.BaseLayer checked name="Detailed (More Labels)">
             <TileLayer attribution="&copy; OpenStreetMap contributors" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" maxZoom={19} />
           </LayersControl.BaseLayer>
         </LayersControl>

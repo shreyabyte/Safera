@@ -454,6 +454,9 @@ export function scoreRoutePath(
   let cctvSum = 0;
   let accessibleCount = 0;
   let policeBoothNearby = false;
+  let nearestRiskSum = 0;
+  let nearestMaxRisk = 0;
+  let nearestRiskSamples = 0;
 
   interface Sample {
     distanceAlongRoute: number;
@@ -483,6 +486,12 @@ export function scoreRoutePath(
     }
 
     const withinRange = nearest && nearestDistance <= NEARBY_LOCATION_MAX_METERS;
+    if (withinRange) {
+      const nearestRisk = (100 - nearest!.safetyScore);
+      nearestRiskSum += nearestRisk;
+      nearestMaxRisk = Math.max(nearestMaxRisk, nearestRisk);
+      nearestRiskSamples++;
+    }
     lightingSum += withinRange ? nearest!.lightingStars * 20 : 60;
     cctvSum += withinRange ? nearest!.cctvPercent : 50;
     if (withinRange && nearest!.accessibility.wheelchairRamps) accessibleCount++;
@@ -501,7 +510,15 @@ export function scoreRoutePath(
 
   const n = samples.length;
   const avgRisk = riskSum / n;
-  const pathSafetyScore = Math.round(100 - Math.min(100, Math.max(0, avgRisk * 0.55 + maxRisk * 0.45)));
+  const effectiveAvgRisk = nearestRiskSamples > 0
+    ? Math.max(avgRisk, nearestRiskSum / nearestRiskSamples)
+    : avgRisk;
+  const effectiveMaxRisk = nearestRiskSamples > 0
+    ? Math.max(maxRisk, nearestMaxRisk)
+    : maxRisk;
+  const pathSafetyScore = nearestRiskSamples === 0 && maxRisk === 0
+    ? 70
+    : Math.round(100 - Math.min(100, Math.max(0, effectiveAvgRisk * 0.55 + effectiveMaxRisk * 0.45)));
 
   // Group contiguous high-risk samples (>=51, matching the grid's "high"
   // band) into segments so the warning describes one real stretch of the

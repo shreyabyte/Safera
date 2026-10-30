@@ -12,7 +12,11 @@ import {
   LatLng,
   RouteStep,
 } from "../lib/routing";
-import { scoreRoutePath, TimeOfDay as GridTimeOfDay } from "../utils/hotspot";
+import {
+  scoreRoutePath,
+  TimeOfDay as GridTimeOfDay,
+  type RoutePathAssessment,
+} from "../utils/hotspot";
 import { CommunityReport } from "../types";
 
 import {
@@ -28,6 +32,15 @@ import {
   Accessibility,
   ArrowRight,
 } from "lucide-react";
+
+const buildRouteInsights = (assessment: RoutePathAssessment): string[] => [
+  `Estimated lighting coverage: ${assessment.lightingPercent}% from nearby mapped location data`,
+  `Estimated step-free coverage: ${assessment.accessibilityPercent}% of sampled points near mapped wheelchair ramps`,
+  `Estimated CCTV coverage: ${assessment.cctvPercent}% from nearby mapped data; not independently verified`,
+  assessment.policeBoothNearby
+    ? "Mapped police booth within 400m of this route"
+    : "No mapped police booth within 400m of this route",
+];
 
 interface RouteGeneratorProps {
   locations: SafetyLocation[];
@@ -131,10 +144,10 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
               safetyScore: assessment.pathSafetyScore,
               lightingPercent: assessment.lightingPercent,
               accessibilityScore: assessment.accessibilityPercent,
+              cctvCoverage: assessment.cctvPercent,
+              policeBoothNearby: assessment.policeBoothNearby,
               riskSegments: assessment.riskSegments.length > 0 ? assessment.riskSegments : [],
-              highlights: assessment.policeBoothNearby
-                ? [...r.highlights, "Passes within 400m of an active police booth"]
-                : r.highlights,
+              highlights: buildRouteInsights(assessment),
             };
           })
           .sort((a, b) => b.safetyScore - a.safetyScore);
@@ -164,12 +177,7 @@ export const RouteGenerator: React.FC<RouteGeneratorProps> = ({
               accessibilityScore: assessment.accessibilityPercent,
               cctvCoverage: assessment.cctvPercent,
               policeBoothNearby: assessment.policeBoothNearby,
-              highlights: [
-                `${assessment.cctvPercent}% average CCTV coverage along this path`,
-                assessment.policeBoothNearby
-                  ? "Passes within 400m of an active police booth"
-                  : "No police booth directly on this path",
-              ],
+              highlights: buildRouteInsights(assessment),
               riskSegments: assessment.riskSegments,
             };
           })
